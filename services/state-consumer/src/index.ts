@@ -356,6 +356,15 @@ async function main() {
 
     const app = new Hono();
 
+    // Admin Auth Middleware
+    app.use('/admin/*', async (c, next) => {
+        const adminKey = process.env.ADMIN_API_KEY;
+        if (adminKey && c.req.header('X-Admin-Key') !== adminKey) {
+            return c.json({ error: 'Unauthorized' }, 401);
+        }
+        await next();
+    });
+
     // Health endpoints
     app.get('/healthz', async (c) => {
         const result = await health.healthz();

@@ -1,204 +1,76 @@
 groups:
-  - name: slo_alerts
+  - name: esports_alerts
     rules:
-      # =====================================
-      # CRITICAL ALERTS (Page immediately)
-      # =====================================
-      
-      - alert: E2ELatencySLOBreach
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(e2e_latency_ms_bucket[2m])) by (le)
-          ) > 500
+      # ===============================
+      # SLO / Performance
+      # ===============================
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.01
         for: 2m
         labels:
-          severity: critical
-          slo: latency
+          severity: warning
         annotations:
-          summary: "E2E latency SLO breach: p95 > 500ms"
-          description: |
-            E2E p95 latency is {{ $value | printf "%.0f" }}ms, exceeding 500ms SLO.
-            This affects B2B clients receiving predictions.
-          runbook_url: "https://wiki.internal/runbooks/latency-slo-breach"
-          
-      - alert: ErrorRateSLOBreach
-        expr: |
-          (
-            sum(rate(ingestion_errors_total[2m])) +
-            sum(rate(state_consumer_events_failed_total[2m]))
-          )
-          /
-          sum(rate(ingestion_events_received_total[2m]))
-          * 100 > 0.1
-        for: 2m
+          summary: "High HTTP Error Rate (> 1%) on {{ $labels.service }}"
+          description: "Service {{ $labels.service }} is returning 5xx errors."
+
+      - alert: HighLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)) > 0.5
+        for: 5m
         labels:
-          severity: critical
-          slo: error_rate
+          severity: warning
         annotations:
-          summary: "Error rate SLO breach: > 0.1%"
-          description: |
-            Error rate is {{ $value | printf "%.3f" }}%, exceeding 0.1% SLO.
-            Events are failing processing.
-          runbook_url: "https://wiki.internal/runbooks/error-rate-slo-breach"
-          
-      - alert: ServiceDown
-        expr: up == 0
+          summary: "Latency p95 > 500ms on {{ $labels.service }}"
+
+      - alert: ConsumerLagCritical
+        expr: consumer_queue_lag > 5000
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Service {{ $labels.job }} is down"
-          description: |
-            Service {{ $labels.job }} on {{ $labels.instance }} has been down for > 1 minute.
-          runbook_url: "https://wiki.internal/runbooks/service-down"
+          summary: "State Consumer Queue Lag > 5k events"
 
-      # =====================================
-      # WARNING ALERTS (Slack notification)
-      # =====================================
-      
-      - alert: E2ELatencyDegraded
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(e2e_latency_ms_bucket[5m])) by (le)
-          ) > 300
-        for: 5m
+      # ===============================
+      # Infrastructure / Resiliency
+      # ===============================
+      - alert: ClickHouseDown
+        expr: up{job="clickhouse"} == 0
+        for: 30s
         labels:
-          severity: warning
-          slo: latency
+          severity: critical
         annotations:
-          summary: "E2E latency degraded: p95 > 300ms"
-          description: |
-            E2E p95 latency is {{ $value | printf "%.0f" }}ms.
-            Approaching 500ms SLO threshold.
-            
-      - alert: ErrorRateElevated
-        expr: |
-          (
-            sum(rate(ingestion_errors_total[5m])) +
-            sum(rate(state_consumer_events_failed_total[5m]))
-          )
-          /
-          sum(rate(ingestion_events_received_total[5m]))
-          * 100 > 0.05
-        for: 5m
-        labels:
-          severity: warning
-          slo: error_rate
-        annotations:
-          summary: "Error rate elevated: > 0.05%"
-          description: |
-            Error rate is {{ $value | printf "%.3f" }}%.
-            Approaching 0.1% SLO threshold.
+          summary: "ClickHouse instance is DOWN"
 
-      - alert: StreamBacklogGrowing
-        expr: |
-          sum(stream_pending_messages) > 1000
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.90
         for: 2m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Redis Stream backlog growing"
-          description: |
-            Stream pending messages: {{ $value }}.
-            Processing may be falling behind.
+          summary: "Redis memory usage > 90%"
 
-      - alert: HighP99Latency
-        expr: |
-          histogram_quantile(0.99,
-            sum(rate(e2e_latency_ms_bucket[5m])) by (le)
-          ) > 1000
+      - alert: PostgresConnectionsHigh
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.85
         for: 5m
         labels:
           severity: warning
-          slo: latency
         annotations:
-          summary: "P99 latency > 1s"
-          description: |
-            P99 latency is {{ $value | printf "%.0f" }}ms.
-            Tail latency is affecting some requests.
+          summary: "Postgres connection pool exhaustion imminent"
 
-      # =====================================
-      # INFO ALERTS (Dashboard only)
-      # =====================================
-
-      - alert: NoEventsReceived
-        expr: |
-          sum(rate(ingestion_events_received_total[5m])) == 0
-        for: 5m
+      # ===============================
+      # Security / Abuse
+      # ===============================
+      - alert: RateLimitSpike
+        expr: rate(http_requests_total{status="429"}[1m]) > 50
+        for: 1m
         labels:
-          severity: info
+          severity: warning
         annotations:
-          summary: "No events received in 5 minutes"
-          description: |
-            No events are being ingested. This may be normal during off-hours.
+          summary: "High rate of 429 entries (Abuse/Attack?)"
 
-      - alert: ClickHouseWriteLatencyHigh
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(clickhouse_insert_latency_ms_bucket[5m])) by (le)
-          ) > 500
-        for: 5m
+      - alert: InvalidSignaturesSpike
+        expr: rate(ingestion_errors_total{type="auth_invalid_signature"}[1m]) > 5
+        for: 1m
         labels:
-          severity: info
+          severity: warning
         annotations:
-          summary: "ClickHouse write latency high"
-          description: |
-            ClickHouse p95 insert latency is {{ $value | printf "%.0f" }}ms.
-            This is async and doesn't affect SLO, but may indicate storage issues.
-
-  # =====================================
-  # SLO TRACKING RULES
-  # =====================================
-  - name: slo_recording_rules
-    rules:
-      # Pre-computed SLO metrics for dashboards
-      
-      - record: slo:e2e_latency_p95:5m
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(e2e_latency_ms_bucket[5m])) by (le)
-          )
-          
-      - record: slo:e2e_latency_p99:5m
-        expr: |
-          histogram_quantile(0.99,
-            sum(rate(e2e_latency_ms_bucket[5m])) by (le)
-          )
-          
-      - record: slo:error_rate:5m
-        expr: |
-          (
-            sum(rate(ingestion_errors_total[5m])) +
-            sum(rate(state_consumer_events_failed_total[5m]))
-          )
-          /
-          sum(rate(ingestion_events_received_total[5m]))
-          * 100
-          
-      - record: slo:latency_compliance:5m
-        expr: |
-          (
-            sum(rate(e2e_latency_ms_bucket{le="500"}[5m]))
-            /
-            sum(rate(e2e_latency_ms_count[5m]))
-          ) * 100
-          
-      - record: slo:error_compliance:5m
-        expr: |
-          100 - slo:error_rate:5m
-          
-      - record: slo:availability:5m
-        expr: |
-          avg(up{job=~"ingestion|state-consumer|analytics|predictor|api-gateway"}) * 100
-
-      # Error budget tracking (monthly)
-      - record: slo:error_budget_remaining
-        expr: |
-          1 - (
-            sum(increase(ingestion_errors_total[30d])) +
-            sum(increase(state_consumer_events_failed_total[30d]))
-          )
-          /
-          (
-            sum(increase(ingestion_events_received_total[30d])) * 0.001
-          )
+          summary: "Spike in invalid ingestion signatures (Potential unauthorized access)"

@@ -17,6 +17,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import Redis from 'ioredis';
+import { createHmac } from 'node:crypto';
 import {
     createLogger,
     createHealthChecks,
@@ -114,6 +115,34 @@ async function main() {
             status: String(c.res.status),
         });
         metrics.requestLatency.observe(latency, { method: c.req.method, path });
+    });
+
+    // Auth Middleware
+    app.use('/events*', async (c, next) => {
+        const secret = process.env.PROVIDER_SECRET;
+        if (!secret) return next();
+
+        const signature = c.req.header('X-Signature');
+        if (!signature) {
+            metrics.errors.inc({ type: 'auth_missing_signature' });
+            return c.json({ error: 'Missing signature' }, 401);
+        }
+
+        try {
+            const cloned = c.req.raw.clone();
+            const body = await cloned.text();
+            const expected = createHmac('sha256', secret).update(body).digest('hex');
+
+            if (signature !== expected) {
+                metrics.errors.inc({ type: 'auth_invalid_signature' });
+                return c.json({ error: 'Invalid signature' }, 403);
+            }
+        } catch (err) {
+            metrics.errors.inc({ type: 'auth_error' });
+            return c.json({ error: 'Auth error' }, 500);
+        }
+
+        await next();
     });
 
     // =====================================

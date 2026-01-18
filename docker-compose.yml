@@ -9,9 +9,9 @@ services:
     image: postgres:16-alpine
     container_name: esports-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: esports
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-esports}
     ports:
       - "5432:5432"
     volumes:
@@ -49,7 +49,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis} --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -104,7 +104,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8081
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379
       LOG_LEVEL: info
     depends_on:
       redis:
@@ -133,7 +133,7 @@ services:
       - "8090:8090" # Metrics
     environment:
       NODE_ENV: production
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
       PREDICTOR_URL: http://predictor:8083
       CONSUMER_BATCH_SIZE: 10
@@ -170,7 +170,7 @@ services:
       NODE_ENV: production
       PORT: 8082
       CLICKHOUSE_URL: http://clickhouse:8123
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379
       LOG_LEVEL: info
     depends_on:
       clickhouse:
@@ -199,7 +199,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8083
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
       LOG_LEVEL: info
     depends_on:
@@ -224,8 +224,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8080
-      REDIS_URL: redis://redis:6379
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/esports
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-esports}
       ANALYTICS_URL: http://analytics:8082
       PREDICTOR_URL: http://predictor:8083
       LOG_LEVEL: info
