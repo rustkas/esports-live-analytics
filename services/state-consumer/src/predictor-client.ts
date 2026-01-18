@@ -9,20 +9,33 @@ import { config } from './config';
 
 const logger = createLogger('state-consumer:predictor', config.logLevel as 'debug' | 'info');
 
+// ... types
+export interface PredictionResult {
+    match_id: string;
+    map_id: string;
+    round_no: number;
+    team_a_win: number;
+    team_b_win: number;
+    model_version: string;
+    features?: Record<string, any>;
+    confidence?: number;
+    ts_calc?: string;
+}
+
 export interface PredictorClient {
-    triggerPrediction(event: BaseEvent, state: MatchState): Promise<void>;
+    triggerPrediction(event: BaseEvent, state: MatchState): Promise<PredictionResult | null>;
 }
 
 export function createPredictorClient(): PredictorClient {
     return {
-        async triggerPrediction(event: BaseEvent, state: MatchState): Promise<void> {
+        async triggerPrediction(event: BaseEvent, state: MatchState): Promise<PredictionResult | null> {
             if (!config.predictor.enabled) {
-                return;
+                return null;
             }
 
             // Only trigger on significant events
             if (!isPredictionTrigger(event.type)) {
-                return;
+                return null;
             }
 
             try {
@@ -45,18 +58,24 @@ export function createPredictorClient(): PredictorClient {
                         status: response.status,
                         match_id: event.match_id,
                     });
-                    return;
+                    return null;
                 }
+
+                const result = await response.json() as PredictionResult;
 
                 logger.debug('Prediction triggered', {
                     match_id: event.match_id,
                     event_type: event.type,
+                    prob_a: result.team_a_win
                 });
+
+                return result;
             } catch (error) {
                 logger.error('Failed to trigger prediction', {
                     error: String(error),
                     match_id: event.match_id,
                 });
+                return null;
             }
         },
     };

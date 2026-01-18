@@ -33,6 +33,7 @@ import { createStreamConsumer, runConsumerLoop, type StreamEntry } from './strea
 import { createStateManager } from './state';
 import { createClickHouseWriter } from './clickhouse';
 import { createPredictorClient } from './predictor-client';
+import { createReplayService } from './replay';
 
 const logger = createLogger('state-consumer', config.logLevel as 'debug' | 'info');
 const metrics = createProductionMetrics('state_consumer');
@@ -92,6 +93,7 @@ async function main() {
     const dlqManager = createDLQManager(redis, DEFAULT_DLQ_CONFIG);
     const shardManager = createShardManager(redis, DEFAULT_SHARD_CONFIG);
     const sequenceValidator = createSequenceValidator(redis, DEFAULT_SEQUENCE_CONFIG);
+    const replayService = createReplayService(redis);
 
     // Generate unique consumer ID
     const consumerId = `consumer-${process.pid}-${Date.now()}`;
@@ -210,6 +212,8 @@ async function main() {
             metrics.recordStage('predict', predictLatency);
 
             if (prediction) {
+                clickhouseWriter.writePrediction(prediction, event);
+
                 ctx.ts_predict_published = Date.now();
 
                 // Calculate and record e2e latency
@@ -423,6 +427,19 @@ async function main() {
     // Sequence stats
     app.get('/admin/sequence/stats', (c) => {
         return c.json({ success: true, data: sequenceValidator.getStats() });
+    });
+
+    // Replay endpoint
+    app.post('/admin/replay/:matchId', async (c) => {
+        const matchId = c.req.param('matchId');
+        const namespace = c.req.query('namespace') || 'replay';
+        try {
+            const result = await replayService.replayMatch(matchId, namespace);
+            return c.json({ success: true, data: result });
+        } catch (e) {
+            logger.error('Replay failed', { matchId, error: String(e) });
+            return c.json({ success: false, error: String(e) }, 500);
+        }
     });
 
     const httpServer = Bun.serve({

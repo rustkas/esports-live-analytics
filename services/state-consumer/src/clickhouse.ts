@@ -8,6 +8,7 @@ import type { BaseEvent } from '@esports/shared';
 import { createLogger, createProductionMetrics } from '@esports/shared';
 import { LocalDiskSpool } from './spool';
 import { config } from './config';
+import type { PredictionResult } from './predictor-client';
 
 const logger = createLogger('state-consumer:clickhouse', config.logLevel as 'debug' | 'info');
 const metrics = createProductionMetrics('clickhouse_writer');
@@ -17,6 +18,7 @@ const backlogGauge = metrics.registry.createGauge('ch_write_backlog', 'Events wa
 
 export interface ClickHouseWriter {
     write(event: BaseEvent): void;
+    writePrediction(pred: PredictionResult, triggerEvent: BaseEvent): void;
     flush(): Promise<void>;
     close(): Promise<void>;
     isHealthy(): Promise<boolean>;
@@ -182,6 +184,30 @@ export function createClickHouseWriter(): ClickHouseWriter {
             } else {
                 scheduleFlush();
             }
+        },
+
+        writePrediction(pred: PredictionResult, trigger: BaseEvent): void {
+            client.insert({
+                table: 'cs2_predictions',
+                values: [{
+                    ts_calc: pred.ts_calc || new Date().toISOString(),
+                    match_id: pred.match_id,
+                    map_id: pred.map_id,
+                    round_no: pred.round_no,
+                    model_version: pred.model_version,
+                    team_a_id: 'A',
+                    team_b_id: 'B',
+                    p_team_a_win: pred.team_a_win,
+                    p_team_b_win: pred.team_b_win,
+                    confidence: pred.confidence || 0,
+                    features: JSON.stringify(pred.features || {}),
+                    trigger_event_id: trigger.event_id,
+                    trigger_event_type: trigger.type,
+                    prediction_id: crypto.randomUUID(),
+                    version: Date.now()
+                }],
+                format: 'JSONEachRow'
+            }).catch(err => logger.error('Failed to write prediction', { error: String(err) }));
         },
 
         async flush(): Promise<void> {
