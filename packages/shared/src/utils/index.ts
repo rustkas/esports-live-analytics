@@ -10,3 +10,7 @@ export * from './security';
 export * from './production-metrics';
 export * from './context';
 export * from './health';
+export * from './dlq';
+export * from './shard';
+export * from './sequence';
+export * from './dedup';
