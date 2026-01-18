@@ -14,6 +14,7 @@ export interface ClickHouseWriter {
     write(event: BaseEvent): void;
     flush(): Promise<void>;
     close(): Promise<void>;
+    isHealthy(): Promise<boolean>;
 }
 
 export function createClickHouseWriter(): ClickHouseWriter {
@@ -99,6 +100,18 @@ export function createClickHouseWriter(): ClickHouseWriter {
         async close(): Promise<void> {
             await this.flush();
             await client.close();
+        },
+
+        async isHealthy(): Promise<boolean> {
+            try {
+                await client.query({
+                    query: 'SELECT 1',
+                    format: 'JSONEachRow',
+                });
+                return true;
+            } catch {
+                return false;
+            }
         },
     };
 }

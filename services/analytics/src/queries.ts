@@ -12,9 +12,11 @@ const logger = createLogger('analytics:queries', config.logLevel as 'debug' | 'i
 
 export interface QueryService {
     getRoundMetrics(matchId: string, mapId: string): Promise<RoundMetrics[]>;
-    getMatchMetrics(matchId: string): Promise<MatchMetrics | null>;
+    getMatchMetrics(matchId: string, mapId?: string): Promise<MatchMetrics | null>;
+    getPlayerStats(matchId: string, mapId: string): Promise<unknown[]>;
     getPredictionHistory(matchId: string, mapId: string): Promise<PredictionHistory>;
-    getEventCounts(matchId: string): Promise<Record<string, number>>;
+    getEventCounts(matchId: string, mapId?: string): Promise<Record<string, number>>;
+    healthCheck(): Promise<boolean>;
     close(): Promise<void>;
 }
 
@@ -189,6 +191,41 @@ export function createQueryService(): QueryService {
             }
 
             return counts;
+        },
+
+        async getPlayerStats(matchId: string, mapId: string): Promise<unknown[]> {
+            const result = await client.query({
+                query: `
+          SELECT 
+            player_id,
+            team,
+            sum(kills) as kills,
+            sum(deaths) as deaths,
+            sum(headshots) as headshots,
+            sum(first_kills) as first_kills,
+            sum(damage_dealt) as damage_dealt
+          FROM cs2_player_stats_store FINAL
+          WHERE match_id = {matchId:UUID} AND map_id = {mapId:UUID}
+          GROUP BY player_id, team
+          ORDER BY kills DESC
+        `,
+                query_params: { matchId, mapId },
+                format: 'JSONEachRow',
+            });
+
+            return result.json();
+        },
+
+        async healthCheck(): Promise<boolean> {
+            try {
+                await client.query({
+                    query: 'SELECT 1',
+                    format: 'JSONEachRow',
+                });
+                return true;
+            } catch {
+                return false;
+            }
         },
 
         async close(): Promise<void> {

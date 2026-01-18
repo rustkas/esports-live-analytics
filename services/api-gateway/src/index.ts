@@ -4,9 +4,12 @@
  * Central API gateway providing:
  * - REST API at /api/*
  * - GraphQL at /graphql
- * - WebSocket subscriptions
- * - Health checks at /health
+ * - Health checks at /health, /healthz, /readyz
  * - Prometheus metrics at /metrics
+ * 
+ * Features:
+ * - Request tracking with metrics
+ * - Graceful shutdown
  */
 
 import { Hono } from 'hono';
@@ -14,7 +17,11 @@ import { cors } from 'hono/cors';
 import { createYoga } from 'graphql-yoga';
 import { makeExecutableSchema } from '@graphql-tools/schema';
 import Redis from 'ioredis';
-import { createLogger, MetricsRegistry } from '@esports/shared';
+import {
+    createLogger,
+    createHealthChecks,
+    createProductionMetrics,
+} from '@esports/shared';
 import { config } from './config';
 import { createDatabase } from './database';
 import { typeDefs } from './schema';
@@ -22,23 +29,15 @@ import { createResolvers } from './resolvers';
 import { createRestRoutes } from './rest';
 
 const logger = createLogger('api-gateway', config.logLevel as 'debug' | 'info');
+const metrics = createProductionMetrics('api_gateway');
+const SERVICE_VERSION = '1.0.0';
 
-// Metrics
-const registry = new MetricsRegistry();
-const requestsTotal = registry.createCounter(
-    'api_gateway_requests_total',
-    'Total requests',
-    ['method', 'path', 'status']
-);
-const requestLatency = registry.createHistogram(
-    'api_gateway_request_latency_ms',
-    'Request latency in milliseconds',
-    ['method', 'path'],
-    [5, 10, 25, 50, 100, 250, 500, 1000]
-);
+// Shutdown state
+let isShuttingDown = false;
 
 async function main() {
     logger.info('Starting API Gateway', {
+        version: SERVICE_VERSION,
         port: config.port,
     });
 
@@ -53,9 +52,34 @@ async function main() {
     // Connect to PostgreSQL
     const db = createDatabase();
 
-    // Test database connection
     await db.query('SELECT 1');
     logger.info('Connected to PostgreSQL');
+
+    // Health checks
+    const health = createHealthChecks(SERVICE_VERSION, [
+        {
+            name: 'redis',
+            check: async () => {
+                try {
+                    await redis.ping();
+                    return true;
+                } catch {
+                    return false;
+                }
+            },
+        },
+        {
+            name: 'postgres',
+            check: async () => {
+                try {
+                    await db.query('SELECT 1');
+                    return true;
+                } catch {
+                    return false;
+                }
+            },
+        },
+    ]);
 
     // Create GraphQL schema
     const schema = makeExecutableSchema({
@@ -75,66 +99,66 @@ async function main() {
 
     // Create Hono app
     const app = new Hono();
-
-    // Middleware
     app.use('*', cors());
 
-    // Request logging and metrics middleware
+    // Request middleware
     app.use('*', async (c, next) => {
+        if (isShuttingDown) {
+            return c.json({ error: 'Service is shutting down' }, 503);
+        }
+
         const start = performance.now();
         await next();
         const latency = performance.now() - start;
 
-        const path = c.req.path.split('/').slice(0, 3).join('/'); // Normalize path
-        requestsTotal.inc({
+        const path = c.req.path.split('/').slice(0, 3).join('/') || '/';
+        metrics.requests.inc({
             method: c.req.method,
             path,
             status: String(c.res.status),
         });
-        requestLatency.observe(latency, { method: c.req.method, path });
+        metrics.requestLatency.observe(latency, { method: c.req.method, path });
     });
 
-    // Health check
+    // =====================================
+    // Health Endpoints
+    // =====================================
+
+    app.get('/healthz', async (c) => {
+        const result = await health.healthz();
+        return c.json(result.body, result.status as 200);
+    });
+
+    app.get('/readyz', async (c) => {
+        const result = await health.readyz();
+        return c.json(result.body, result.status as 200 | 503);
+    });
+
     app.get('/health', async (c) => {
-        const checks: Array<{ name: string; status: string }> = [];
-
-        // Check Redis
-        try {
-            await redis.ping();
-            checks.push({ name: 'redis', status: 'pass' });
-        } catch {
-            checks.push({ name: 'redis', status: 'fail' });
-        }
-
-        // Check PostgreSQL
-        try {
-            await db.query('SELECT 1');
-            checks.push({ name: 'postgres', status: 'pass' });
-        } catch {
-            checks.push({ name: 'postgres', status: 'fail' });
-        }
-
-        const allPass = checks.every(check => check.status === 'pass');
-
-        return c.json({
-            status: allPass ? 'healthy' : 'degraded',
-            version: '1.0.0',
-            uptime: process.uptime(),
-            checks,
-        }, allPass ? 200 : 503);
+        const result = await health.health();
+        return c.json(result.body, result.status as 200 | 503);
     });
 
-    // Prometheus metrics
+    // =====================================
+    // Metrics
+    // =====================================
+
     app.get('/metrics', (c) => {
         c.header('Content-Type', 'text/plain; version=0.0.4');
-        return c.text(registry.getMetrics());
+        return c.text(metrics.registry.getMetrics());
     });
 
-    // REST API routes
+    // =====================================
+    // REST API
+    // =====================================
+
     const restRoutes = createRestRoutes(db, redis);
     app.route('/api', restRoutes);
 
-    // GraphQL endpoint
+    // =====================================
+    // GraphQL
+    // =====================================
+
     app.on(['GET', 'POST'], '/graphql', async (c) => {
         const response = await yoga.fetch(c.req.raw, {
             db,
@@ -146,25 +170,40 @@ async function main() {
         });
     });
 
-    // Start server using native Bun API
+    // =====================================
+    // Start Server
+    // =====================================
+
     const server = Bun.serve({
         port: config.port,
         hostname: config.host,
         fetch: app.fetch,
     });
 
-    logger.info(`API Gateway listening on ${config.host}:${config.port}`);
-    logger.info('Endpoints:');
-    logger.info(`  - REST API: http://localhost:${config.port}/api`);
-    logger.info(`  - GraphQL: http://localhost:${config.port}/graphql`);
-    logger.info(`  - Health: http://localhost:${config.port}/health`);
-    logger.info(`  - Metrics: http://localhost:${config.port}/metrics`);
+    logger.info(`API Gateway listening on ${config.host}:${config.port}`, {
+        endpoints: [
+            'REST: /api/*',
+            'GraphQL: /graphql',
+            'Health: /health, /healthz, /readyz',
+            'Metrics: /metrics',
+        ],
+    });
 
-    // Graceful shutdown
-    const shutdown = async () => {
-        logger.info('Shutting down...');
+    // =====================================
+    // Graceful Shutdown
+    // =====================================
+
+    const shutdown = async (signal: string) => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+
+        logger.info('Graceful shutdown started', { signal });
 
         server.stop();
+
+        // Wait for in-flight requests
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
         await db.end();
         await redis.quit();
 
@@ -172,8 +211,8 @@ async function main() {
         process.exit(0);
     };
 
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 main().catch((error) => {

@@ -1,19 +1,32 @@
 /**
- * State Consumer Service (Redis Streams version)
+ * State Consumer Service
  * 
- * Consumes events from Redis Streams, updates match state in Redis,
- * writes raw events to ClickHouse, and triggers predictions.
+ * Consumes events from Redis Streams and:
+ * - Updates match state in Redis
+ * - Writes raw events to ClickHouse
+ * - Triggers predictions
+ * - Tracks e2e latency
  * 
- * Key features:
+ * Features:
  * - Strict ordering per shard (match_id, map_id)
- * - Automatic discovery of new streams
- * - Claiming stale messages for fault tolerance
- * - Graceful shutdown
+ * - Trace ID propagation
+ * - Queue lag metrics
+ * - Health checks
+ * - Graceful shutdown with drain
  */
 
+import { Hono } from 'hono';
 import Redis from 'ioredis';
 import type { BaseEvent } from '@esports/shared';
-import { createLogger, MetricsRegistry } from '@esports/shared';
+import {
+    createLogger,
+    createHealthChecks,
+    createProductionMetrics,
+    createEventContext,
+    calculateQueueLag,
+    getLogContext,
+    SLO,
+} from '@esports/shared';
 import { config } from './config';
 import { createStreamConsumer, runConsumerLoop, type StreamEntry } from './stream';
 import { createStateManager } from './state';
@@ -21,37 +34,18 @@ import { createClickHouseWriter } from './clickhouse';
 import { createPredictorClient } from './predictor-client';
 
 const logger = createLogger('state-consumer', config.logLevel as 'debug' | 'info');
+const metrics = createProductionMetrics('state_consumer');
+const SERVICE_VERSION = '1.0.0';
 
-// Metrics
-const registry = new MetricsRegistry();
-const eventsProcessed = registry.createCounter(
-    'state_consumer_events_processed_total',
-    'Total events processed',
-    ['type']
-);
-const eventsFailed = registry.createCounter(
-    'state_consumer_events_failed_total',
-    'Total events failed',
-    ['type']
-);
-const processingLatency = registry.createHistogram(
-    'state_consumer_processing_latency_ms',
-    'Event processing latency in milliseconds',
-    ['type'],
-    [1, 5, 10, 25, 50, 100, 250, 500]
-);
-const e2eLatency = registry.createHistogram(
-    'state_consumer_e2e_latency_ms',
-    'End-to-end latency from event timestamp',
-    [],
-    [50, 100, 200, 300, 400, 500, 750, 1000]
-);
+// Shutdown state
+const shutdownSignal = { stop: false };
+let isReady = false;
 
 async function main() {
-    logger.info('Starting State Consumer (Redis Streams mode)', {
+    logger.info('Starting State Consumer', {
+        version: SERVICE_VERSION,
         redis: config.redis.url,
         clickhouse: config.clickhouse.url,
-        concurrency: config.queue.concurrency,
     });
 
     // Connect to Redis
@@ -80,22 +74,62 @@ async function main() {
     // Generate unique consumer ID
     const consumerId = `consumer-${process.pid}-${Date.now()}`;
 
-    // Signal for graceful shutdown
-    const signal = { stop: false };
+    // Health checks
+    const health = createHealthChecks(SERVICE_VERSION, [
+        {
+            name: 'redis',
+            check: async () => {
+                try {
+                    await redis.ping();
+                    return true;
+                } catch {
+                    return false;
+                }
+            },
+        },
+        {
+            name: 'clickhouse',
+            check: async () => clickhouseWriter.isHealthy(),
+        },
+    ]);
 
     // Stats
     let processedCount = 0;
     let failedCount = 0;
     const startTime = Date.now();
 
-    // Event handler
+    // =====================================
+    // Event Handler with Full Tracing
+    // =====================================
+
     const handleEvent = async (entry: StreamEntry) => {
-        const event = entry.event;
-        const startMs = performance.now();
+        const event = entry.event as BaseEvent & { ts_ingest?: string; trace_id?: string };
+        const processStart = performance.now();
+
+        // Create context for tracing
+        const ctx = createEventContext({
+            event_id: event.event_id,
+            match_id: event.match_id,
+            map_id: event.map_id,
+            type: event.type,
+            ts_ingest: event.ts_ingest,
+            trace_id: event.trace_id,
+        });
+        ctx.ts_process_start = Date.now();
+
+        const logCtx = getLogContext(ctx);
 
         try {
+            // Track queue lag
+            const queueLag = calculateQueueLag(ctx);
+            if (queueLag > 0) {
+                metrics.queueLag.observe(queueLag);
+            }
+
             // 1. Update match state in Redis
+            const stateStart = performance.now();
             const state = await stateManager.updateMatchState(event);
+            metrics.recordStage('state', performance.now() - stateStart);
 
             // 2. Publish state update for subscribers
             await stateManager.publishStateUpdate(event.match_id, state);
@@ -104,67 +138,91 @@ async function main() {
             clickhouseWriter.write(event);
 
             // 4. Trigger prediction if significant event
-            await predictorClient.triggerPrediction(event, state);
+            const predictStart = performance.now();
+            const prediction = await predictorClient.triggerPrediction(event, state);
+            const predictLatency = performance.now() - predictStart;
+            metrics.recordStage('predict', predictLatency);
 
-            const latencyMs = performance.now() - startMs;
+            if (prediction) {
+                ctx.ts_predict_published = Date.now();
 
-            // Calculate e2e latency (from event timestamp)
-            if (event.ts_ingest) {
-                const ingestTime = new Date(event.ts_ingest).getTime();
-                const e2eMs = Date.now() - ingestTime;
-                e2eLatency.observe(e2eMs);
+                // Calculate and record e2e latency
+                const e2eLatency = ctx.ts_predict_published - ctx.ts_ingest;
+                metrics.recordE2ELatency(e2eLatency, event.type);
+
+                // Log warning if approaching SLO
+                if (e2eLatency > SLO.E2E_LATENCY_WARNING_MS) {
+                    logger.warn('E2E latency warning', {
+                        ...logCtx,
+                        e2e_latency_ms: e2eLatency,
+                        queue_lag_ms: queueLag,
+                        slo_threshold_ms: SLO.E2E_LATENCY_P95_MS,
+                    });
+                }
             }
 
-            eventsProcessed.inc({ type: event.type });
-            processingLatency.observe(latencyMs, { type: event.type });
+            const totalLatency = performance.now() - processStart;
+            metrics.eventsProcessed.inc({ type: event.type });
             processedCount++;
 
             logger.debug('Event processed', {
-                event_id: event.event_id,
-                type: event.type,
-                match_id: event.match_id,
+                ...logCtx,
                 stream_id: entry.id,
-                latency_ms: latencyMs.toFixed(2),
+                queue_lag_ms: queueLag.toFixed(0),
+                process_latency_ms: totalLatency.toFixed(2),
             });
 
         } catch (error) {
-            eventsFailed.inc({ type: event.type });
+            metrics.eventsFailed.inc({ type: event.type });
             failedCount++;
+
+            logger.error('Event processing failed', {
+                ...logCtx,
+                stream: entry.streamKey,
+                id: entry.id,
+                error: String(error),
+            });
+
             throw error; // Re-throw to prevent ACK
         }
     };
 
     // Error handler
     const handleError = async (error: Error, entry: StreamEntry) => {
-        logger.error('Event processing failed', {
+        logger.error('Event handler error', {
             event_id: entry.event.event_id,
-            stream: entry.streamKey,
-            id: entry.id,
+            match_id: entry.event.match_id,
             error: String(error),
         });
     };
+
+    // Mark as ready
+    isReady = true;
 
     // Start consumer loop
     const consumerPromise = runConsumerLoop(streamConsumer, {
         consumerId,
         onEvent: handleEvent,
         onError: handleError,
-        batchSize: config.queue.concurrency,
-        blockMs: 2000,
-        discoveryIntervalMs: 5000,
-    }, signal);
+        batchSize: config.consumer.batchSize,
+        blockMs: config.consumer.blockMs,
+        discoveryIntervalMs: config.consumer.discoveryIntervalMs,
+    }, shutdownSignal);
 
     logger.info('State Consumer ready', {
         consumerId,
-        mode: 'redis-streams',
+        batch_size: config.consumer.batchSize,
     });
 
-    // Stats logging
+    // =====================================
+    // Stats Logging
+    // =====================================
+
     const statsInterval = setInterval(() => {
         const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
         const rate = uptimeSeconds > 0 ? (processedCount / uptimeSeconds).toFixed(2) : 0;
 
-        logger.info('Stats', {
+        logger.info('Processing stats', {
             processed: processedCount,
             failed: failedCount,
             rate_per_sec: rate,
@@ -172,49 +230,75 @@ async function main() {
         });
     }, 30000);
 
-    // Metrics endpoint
-    const metricsServer = Bun.serve({
-        port: config.queue.concurrency > 1 ? 8091 : 8090, // Avoid port conflicts
-        fetch: (req) => {
-            const url = new URL(req.url);
+    // =====================================
+    // HTTP Server for Health/Metrics
+    // =====================================
 
-            if (url.pathname === '/health') {
-                return Response.json({
-                    status: 'healthy',
-                    mode: 'redis-streams',
-                    consumerId,
-                    processed: processedCount,
-                    failed: failedCount,
-                });
-            }
+    const app = new Hono();
 
-            if (url.pathname === '/metrics') {
-                return new Response(registry.getMetrics(), {
-                    headers: { 'Content-Type': 'text/plain; version=0.0.4' },
-                });
-            }
-
-            return new Response('Not Found', { status: 404 });
-        },
+    app.get('/healthz', async (c) => {
+        const result = await health.healthz();
+        return c.json(result.body, result.status as 200);
     });
 
-    logger.info(`Metrics server on port ${metricsServer.port}`);
+    app.get('/readyz', async (c) => {
+        if (!isReady) {
+            return c.json({ status: 'not ready' }, 503);
+        }
+        const result = await health.readyz();
+        return c.json(result.body, result.status as 200 | 503);
+    });
 
-    // Graceful shutdown
-    const shutdown = async () => {
-        logger.info('Shutting down...');
+    app.get('/health', async (c) => {
+        const result = await health.health();
+        return c.json({
+            ...result.body as object,
+            consumer_id: consumerId,
+            processed: processedCount,
+            failed: failedCount,
+            rate_per_sec: ((processedCount / Math.max(1, (Date.now() - startTime) / 1000))).toFixed(2),
+        }, result.status as 200 | 503);
+    });
 
-        signal.stop = true;
+    app.get('/metrics', (c) => {
+        return new Response(metrics.registry.getMetrics(), {
+            headers: { 'Content-Type': 'text/plain; version=0.0.4' },
+        });
+    });
+
+    const httpServer = Bun.serve({
+        port: config.metrics.port,
+        fetch: app.fetch,
+    });
+
+    logger.info(`Metrics server on port ${config.metrics.port}`);
+
+    // =====================================
+    // Graceful Shutdown
+    // =====================================
+
+    const shutdown = async (signal: string) => {
+        if (shutdownSignal.stop) return;
+
+        logger.info('Graceful shutdown started', { signal });
+
+        // Stop accepting new work
+        shutdownSignal.stop = true;
+        isReady = false;
+
+        // Stop stats logging
         clearInterval(statsInterval);
 
-        // Wait for consumer loop to finish
+        // Wait for consumer loop to finish current batch
         await consumerPromise;
 
         // Flush ClickHouse buffer
         await clickhouseWriter.close();
 
-        // Close connections
-        metricsServer.stop();
+        // Close HTTP server
+        httpServer.stop();
+
+        // Close Redis
         await redis.quit();
 
         logger.info('Shutdown complete', {
@@ -225,8 +309,8 @@ async function main() {
         process.exit(0);
     };
 
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 main().catch((error) => {
