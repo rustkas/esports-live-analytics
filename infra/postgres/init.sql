@@ -517,3 +517,75 @@ FROM matches m
 JOIN teams ta ON m.team_a_id = ta.id
 JOIN teams tb ON m.team_b_id = tb.id
 LEFT JOIN match_maps mm ON mm.match_id = m.id AND mm.status = 'live';
+
+-- ============================================
+-- 8. Data Providers & Ingestion
+-- ============================================
+CREATE TABLE IF NOT EXISTS providers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    description TEXT,
+    
+    -- Security
+    api_key_hash VARCHAR(128), 
+    secret_hash VARCHAR(128),
+    
+    -- Configuration
+    rate_limit_rps INTEGER DEFAULT 100,
+    dedup_strategy VARCHAR(50) DEFAULT 'seq_no_window',
+    
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS provider_ingestion_errors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider_id UUID REFERENCES providers(id),
+    
+    -- Event context
+    raw_event_id VARCHAR(255),
+    match_id UUID, -- nullable if parse failed
+    event_type VARCHAR(100),
+    
+    -- Error details
+    error_code VARCHAR(50), -- e.g. 'UNKNOWN_TYPE', 'SCHEMA_INVALID'
+    error_message TEXT,
+    raw_payload TEXT, -- or JSONB
+    
+    occurred_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ -- NULL if pending
+);
+
+CREATE INDEX idx_ingest_errors_match ON provider_ingestion_errors(match_id);
+CREATE INDEX idx_ingest_errors_provider ON provider_ingestion_errors(provider_id);
+
+-- ============================================
+-- 9. Replay & cursors
+-- ============================================
+CREATE TABLE IF NOT EXISTS match_replay_cursors (
+    match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    provider_id UUID REFERENCES providers(id),
+    
+    last_seq_no INTEGER DEFAULT 0,
+    last_event_ts TIMESTAMPTZ,
+    
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    PRIMARY KEY (match_id, provider_id)
+);
+
+-- ============================================
+-- 10. Schema Registry
+-- ============================================
+CREATE TABLE IF NOT EXISTS event_schemas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    event_type VARCHAR(100) NOT NULL,
+    version VARCHAR(20) NOT NULL, -- '1.0.0'
+    
+    schema_json JSONB NOT NULL, -- JSON Schema
+    
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    UNIQUE(event_type, version)
+);
