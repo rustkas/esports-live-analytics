@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS matches (
 
 CREATE INDEX idx_matches_status ON matches(status);
 CREATE INDEX idx_matches_scheduled ON matches(scheduled_at);
+CREATE INDEX idx_matches_started ON matches(started_at);
 CREATE INDEX idx_matches_teams ON matches(team_a_id, team_b_id);
+CREATE INDEX idx_matches_tournament ON matches(tournament_id);
 CREATE INDEX idx_matches_live ON matches(status) WHERE status = 'live';
 
 -- ============================================

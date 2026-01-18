@@ -30,20 +30,23 @@ CREATE TABLE IF NOT EXISTS cs2_events_raw
     round_no UInt8,
     
     -- Timestamps
-    ts_event DateTime64(3),
-    ts_ingest DateTime64(3) DEFAULT now64(3),
+    ts_event DateTime64(3) CODEC(Delta, ZSTD(1)),
+    ts_ingest DateTime64(3) DEFAULT now64(3) CODEC(Delta, ZSTD(1)),
     
     -- Event data
     type LowCardinality(String),
     source LowCardinality(String),
-    seq_no UInt64,
-    payload String,  -- JSON
+    seq_no UInt64 CODEC(DoubleDelta, ZSTD(1)),
+    payload String CODEC(ZSTD(3)),  -- JSON compressed
     
     -- Tracing
     trace_id String DEFAULT '',
     
     -- Versioning for ReplacingMergeTree
-    version UInt64 DEFAULT toUnixTimestamp64Milli(now64(3))
+    version UInt64 DEFAULT toUnixTimestamp64Milli(now64(3)) CODEC(DoubleDelta, ZSTD(1)),
+
+    -- Indexes
+    INDEX idx_event_id event_id TYPE tokenbf_v1(1024, 2, 0) GRANULARITY 4
 )
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
@@ -54,6 +57,71 @@ SETTINGS index_granularity = 8192;
 -- Index for fast lookups
 ALTER TABLE cs2_events_raw ADD INDEX idx_type type TYPE set(100) GRANULARITY 4;
 ALTER TABLE cs2_events_raw ADD INDEX idx_round round_no TYPE minmax GRANULARITY 1;
+
+-- ============================================================
+-- SECTION 1.5: PARSED EVENTS (Typed columns for analytics)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS cs2_events_parsed
+(
+    date Date DEFAULT toDate(ts_event),
+    ts_event DateTime64(3) CODEC(Delta, ZSTD(1)),
+    match_id UUID,
+    map_id UUID,
+    round_no UInt8,
+    event_id UUID,
+    type LowCardinality(String),
+
+    -- Kill specifics
+    killer_team LowCardinality(String) DEFAULT '',
+    victim_team LowCardinality(String) DEFAULT '',
+    is_headshot UInt8 DEFAULT 0,
+    weapon LowCardinality(String) DEFAULT '',
+
+    -- Economy specifics
+    team_a_econ UInt32 DEFAULT 0,
+    team_b_econ UInt32 DEFAULT 0,
+    team_a_equipment_value UInt32 DEFAULT 0,
+    team_b_equipment_value UInt32 DEFAULT 0,
+
+    -- Round End
+    winner_team LowCardinality(String) DEFAULT '',
+    win_reason LowCardinality(String) DEFAULT ''
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, map_id, round_no, ts_event)
+TTL date + INTERVAL 180 DAY;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_events_parsed
+TO cs2_events_parsed
+AS SELECT
+    toDate(ts_event) as date,
+    ts_event,
+    match_id,
+    map_id,
+    round_no,
+    event_id,
+    type,
+    
+    -- Kill
+    JSONExtractString(payload, 'killer_team') as killer_team,
+    JSONExtractString(payload, 'victim_team') as victim_team,
+    JSONExtractBool(payload, 'is_headshot') as is_headshot,
+    JSONExtractString(payload, 'weapon') as weapon,
+
+    -- Economy
+    JSONExtractUInt(payload, 'team_a_econ') as team_a_econ,
+    JSONExtractUInt(payload, 'team_b_econ') as team_b_econ,
+    JSONExtractUInt(payload, 'team_a_equipment_value') as team_a_equipment_value,
+    JSONExtractUInt(payload, 'team_b_equipment_value') as team_b_equipment_value,
+
+    -- Round End
+    JSONExtractString(payload, 'winner_team') as winner_team,
+    JSONExtractString(payload, 'win_reason') as win_reason
+
+FROM cs2_events_raw
+WHERE type IN ('kill', 'economy_update', 'round_end');
 
 -- ============================================================
 -- SECTION 2: PREDICTIONS TABLE
@@ -399,3 +467,140 @@ FROM cs2_match_metrics_store FINAL
 WHERE status = 'live'
     AND last_event_ts > now64(3) - INTERVAL 5 MINUTE
 ORDER BY last_event_ts DESC;
+
+-- ============================================================
+-- 3.4 Player Round Stats (Granular)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS cs2_player_round_stats
+(
+    date Date,
+    match_id UUID,
+    map_id UUID,
+    round_no UInt8,
+    player_id UUID,
+    team LowCardinality(String),
+    
+    kills SimpleAggregateFunction(sum, UInt16),
+    deaths SimpleAggregateFunction(sum, UInt16),
+    assists SimpleAggregateFunction(sum, UInt16),
+    damage SimpleAggregateFunction(sum, UInt32),
+    headshots SimpleAggregateFunction(sum, UInt16)
+)
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, map_id, round_no, player_id)
+TTL date + INTERVAL 180 DAY;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_player_round_stats
+TO cs2_player_round_stats
+AS SELECT
+    toDate(ts_event) as date,
+    match_id,
+    map_id,
+    round_no,
+    JSONExtractString(payload, 'killer_player_id')::UUID as player_id,
+    JSONExtractString(payload, 'killer_team') as team,
+    count() as kills,
+    0 as deaths,
+    0 as assists,
+    0 as damage,
+    countIf(JSONExtractBool(payload, 'is_headshot')) as headshots
+FROM cs2_events_raw
+WHERE type = 'kill'
+GROUP BY date, match_id, map_id, round_no, player_id, team
+
+UNION ALL
+
+SELECT
+    toDate(ts_event) as date,
+    match_id,
+    map_id,
+    round_no,
+    JSONExtractString(payload, 'victim_player_id')::UUID as player_id,
+    JSONExtractString(payload, 'victim_team') as team,
+    0 as kills,
+    count() as deaths,
+    0 as assists,
+    0 as damage,
+    0 as headshots
+FROM cs2_events_raw
+WHERE type = 'kill'
+GROUP BY date, match_id, map_id, round_no, player_id, team;
+
+-- ============================================================
+-- 3.5 Team Round Stats
+-- ============================================================
+CREATE TABLE IF NOT EXISTS cs2_team_round_stats
+(
+    date Date,
+    match_id UUID,
+    map_id UUID,
+    round_no UInt8,
+    team LowCardinality(String),
+    
+    equipment_value SimpleAggregateFunction(max, UInt32),
+    money_start SimpleAggregateFunction(max, UInt32),
+    util_damage SimpleAggregateFunction(sum, UInt32)
+)
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, map_id, round_no, team)
+TTL date + INTERVAL 180 DAY;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_team_round_stats
+TO cs2_team_round_stats
+AS SELECT
+    toDate(ts_event) as date,
+    match_id,
+    map_id,
+    round_no,
+    'A' as team, 
+    maxIf(JSONExtractUInt(payload, 'team_a_equipment_value'), type='economy_update') as equipment_value,
+    maxIf(JSONExtractUInt(payload, 'team_a_econ'), type='economy_update') as money_start,
+    0 as util_damage
+FROM cs2_events_raw
+WHERE type = 'economy_update'
+GROUP BY date, match_id, map_id, round_no, team
+
+UNION ALL
+
+SELECT
+    toDate(ts_event) as date,
+    match_id,
+    map_id,
+    round_no,
+    'B' as team,
+    maxIf(JSONExtractUInt(payload, 'team_b_equipment_value'), type='economy_update') as equipment_value,
+    maxIf(JSONExtractUInt(payload, 'team_b_econ'), type='economy_update') as money_start,
+    0 as util_damage
+FROM cs2_events_raw
+WHERE type = 'economy_update'
+GROUP BY date, match_id, map_id, round_no, team;
+
+-- ============================================================
+-- 3.6 Match Timeline
+-- ============================================================
+CREATE TABLE IF NOT EXISTS cs2_match_timeline
+(
+    date Date,
+    match_id UUID,
+    minute DateTime,
+    
+    events_count SimpleAggregateFunction(sum, UInt32),
+    kills_count SimpleAggregateFunction(sum, UInt32)
+)
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, minute)
+TTL date + INTERVAL 180 DAY;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_match_timeline
+TO cs2_match_timeline
+AS SELECT
+    toDate(ts_event) as date,
+    match_id,
+    toStartOfMinute(ts_event) as minute,
+    count() as events_count,
+    countIf(type = 'kill') as kills_count
+FROM cs2_events_raw
+GROUP BY date, match_id, minute;
