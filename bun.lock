@@ -6,6 +6,7 @@
       "name": "esports-live-analytics",
       "devDependencies": {
         "@types/node": "^20.11.0",
+        "bun-types": "^1.0.25",
         "concurrently": "^8.2.2",
         "eslint": "^8.56.0",
         "prettier": "^3.2.4",

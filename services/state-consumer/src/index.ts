@@ -23,7 +23,7 @@ async function main() {
         concurrency: config.queue.concurrency,
     });
 
-    // Connect to Redis
+    // Connect to Redis for state management
     const redis = new Redis(config.redis.url, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
@@ -40,12 +40,6 @@ async function main() {
 
     await redis.connect();
 
-    // Create a separate connection for the worker
-    const workerRedis = new Redis(config.redis.url, {
-        maxRetriesPerRequest: null,
-        enableReadyCheck: false,
-    });
-
     // Initialize components
     const stateManager = createStateManager(redis);
     const clickhouseWriter = createClickHouseWriter();
@@ -56,7 +50,7 @@ async function main() {
     let eventsFailed = 0;
     const startTime = Date.now();
 
-    // Create worker
+    // Create worker with connection URL (avoids ioredis type conflicts)
     const worker = new Worker(
         config.queue.name,
         async (job: Job<BaseEvent>) => {
@@ -97,7 +91,11 @@ async function main() {
             }
         },
         {
-            connection: workerRedis,
+            // Use connection URL string to avoid ioredis version conflicts
+            connection: {
+                host: new URL(config.redis.url).hostname || 'localhost',
+                port: parseInt(new URL(config.redis.url).port || '6379', 10),
+            },
             concurrency: config.queue.concurrency,
             limiter: {
                 max: 1000,
@@ -144,7 +142,6 @@ async function main() {
 
         await worker.close();
         await clickhouseWriter.close();
-        await workerRedis.quit();
         await redis.quit();
 
         logger.info('Shutdown complete', {
