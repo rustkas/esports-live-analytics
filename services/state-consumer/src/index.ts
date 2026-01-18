@@ -1,29 +1,60 @@
 /**
- * State Consumer Service
+ * State Consumer Service (Redis Streams version)
  * 
- * Consumes events from BullMQ queue, updates match state in Redis,
+ * Consumes events from Redis Streams, updates match state in Redis,
  * writes raw events to ClickHouse, and triggers predictions.
+ * 
+ * Key features:
+ * - Strict ordering per shard (match_id, map_id)
+ * - Automatic discovery of new streams
+ * - Claiming stale messages for fault tolerance
+ * - Graceful shutdown
  */
 
-import { Worker, type Job } from 'bullmq';
 import Redis from 'ioredis';
 import type { BaseEvent } from '@esports/shared';
-import { createLogger } from '@esports/shared';
+import { createLogger, MetricsRegistry } from '@esports/shared';
 import { config } from './config';
+import { createStreamConsumer, runConsumerLoop, type StreamEntry } from './stream';
 import { createStateManager } from './state';
 import { createClickHouseWriter } from './clickhouse';
 import { createPredictorClient } from './predictor-client';
 
 const logger = createLogger('state-consumer', config.logLevel as 'debug' | 'info');
 
+// Metrics
+const registry = new MetricsRegistry();
+const eventsProcessed = registry.createCounter(
+    'state_consumer_events_processed_total',
+    'Total events processed',
+    ['type']
+);
+const eventsFailed = registry.createCounter(
+    'state_consumer_events_failed_total',
+    'Total events failed',
+    ['type']
+);
+const processingLatency = registry.createHistogram(
+    'state_consumer_processing_latency_ms',
+    'Event processing latency in milliseconds',
+    ['type'],
+    [1, 5, 10, 25, 50, 100, 250, 500]
+);
+const e2eLatency = registry.createHistogram(
+    'state_consumer_e2e_latency_ms',
+    'End-to-end latency from event timestamp',
+    [],
+    [50, 100, 200, 300, 400, 500, 750, 1000]
+);
+
 async function main() {
-    logger.info('Starting State Consumer', {
+    logger.info('Starting State Consumer (Redis Streams mode)', {
         redis: config.redis.url,
         clickhouse: config.clickhouse.url,
         concurrency: config.queue.concurrency,
     });
 
-    // Connect to Redis for state management
+    // Connect to Redis
     const redis = new Redis(config.redis.url, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
@@ -41,112 +72,154 @@ async function main() {
     await redis.connect();
 
     // Initialize components
+    const streamConsumer = createStreamConsumer(redis);
     const stateManager = createStateManager(redis);
     const clickhouseWriter = createClickHouseWriter();
     const predictorClient = createPredictorClient();
 
-    // Metrics
-    let eventsProcessed = 0;
-    let eventsFailed = 0;
+    // Generate unique consumer ID
+    const consumerId = `consumer-${process.pid}-${Date.now()}`;
+
+    // Signal for graceful shutdown
+    const signal = { stop: false };
+
+    // Stats
+    let processedCount = 0;
+    let failedCount = 0;
     const startTime = Date.now();
 
-    // Create worker with connection URL (avoids ioredis type conflicts)
-    const worker = new Worker(
-        config.queue.name,
-        async (job: Job<BaseEvent>) => {
-            const event = job.data;
-            const startMs = performance.now();
+    // Event handler
+    const handleEvent = async (entry: StreamEntry) => {
+        const event = entry.event;
+        const startMs = performance.now();
 
-            try {
-                // 1. Update match state in Redis
-                const state = await stateManager.updateMatchState(event);
+        try {
+            // 1. Update match state in Redis
+            const state = await stateManager.updateMatchState(event);
 
-                // 2. Publish state update for subscribers
-                await stateManager.publishStateUpdate(event.match_id, state);
+            // 2. Publish state update for subscribers
+            await stateManager.publishStateUpdate(event.match_id, state);
 
-                // 3. Write raw event to ClickHouse
-                clickhouseWriter.write(event);
+            // 3. Write raw event to ClickHouse (batched, async)
+            clickhouseWriter.write(event);
 
-                // 4. Trigger prediction if significant event
-                await predictorClient.triggerPrediction(event, state);
+            // 4. Trigger prediction if significant event
+            await predictorClient.triggerPrediction(event, state);
 
-                eventsProcessed++;
+            const latencyMs = performance.now() - startMs;
 
-                const latencyMs = performance.now() - startMs;
-
-                logger.debug('Event processed', {
-                    event_id: event.event_id,
-                    type: event.type,
-                    match_id: event.match_id,
-                    latency_ms: latencyMs.toFixed(2),
-                });
-
-            } catch (error) {
-                eventsFailed++;
-                logger.error('Event processing failed', {
-                    event_id: event.event_id,
-                    error: String(error),
-                });
-                throw error; // Re-throw to trigger BullMQ retry
+            // Calculate e2e latency (from event timestamp)
+            if (event.ts_ingest) {
+                const ingestTime = new Date(event.ts_ingest).getTime();
+                const e2eMs = Date.now() - ingestTime;
+                e2eLatency.observe(e2eMs);
             }
-        },
-        {
-            // Use connection URL string to avoid ioredis version conflicts
-            connection: {
-                host: new URL(config.redis.url).hostname || 'localhost',
-                port: parseInt(new URL(config.redis.url).port || '6379', 10),
-            },
-            concurrency: config.queue.concurrency,
-            limiter: {
-                max: 1000,
-                duration: 1000, // 1000 jobs per second max
-            },
+
+            eventsProcessed.inc({ type: event.type });
+            processingLatency.observe(latencyMs, { type: event.type });
+            processedCount++;
+
+            logger.debug('Event processed', {
+                event_id: event.event_id,
+                type: event.type,
+                match_id: event.match_id,
+                stream_id: entry.id,
+                latency_ms: latencyMs.toFixed(2),
+            });
+
+        } catch (error) {
+            eventsFailed.inc({ type: event.type });
+            failedCount++;
+            throw error; // Re-throw to prevent ACK
         }
-    );
+    };
 
-    worker.on('completed', (job) => {
-        logger.debug('Job completed', { jobId: job.id });
-    });
-
-    worker.on('failed', (job, error) => {
-        logger.error('Job failed', {
-            jobId: job?.id,
+    // Error handler
+    const handleError = async (error: Error, entry: StreamEntry) => {
+        logger.error('Event processing failed', {
+            event_id: entry.event.event_id,
+            stream: entry.streamKey,
+            id: entry.id,
             error: String(error),
         });
-    });
+    };
 
-    worker.on('error', (error) => {
-        logger.error('Worker error', { error: String(error) });
-    });
+    // Start consumer loop
+    const consumerPromise = runConsumerLoop(streamConsumer, {
+        consumerId,
+        onEvent: handleEvent,
+        onError: handleError,
+        batchSize: config.queue.concurrency,
+        blockMs: 2000,
+        discoveryIntervalMs: 5000,
+    }, signal);
 
-    logger.info('State Consumer ready, waiting for events...');
+    logger.info('State Consumer ready', {
+        consumerId,
+        mode: 'redis-streams',
+    });
 
     // Stats logging
     const statsInterval = setInterval(() => {
         const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
-        const rate = uptimeSeconds > 0 ? (eventsProcessed / uptimeSeconds).toFixed(2) : 0;
+        const rate = uptimeSeconds > 0 ? (processedCount / uptimeSeconds).toFixed(2) : 0;
 
         logger.info('Stats', {
-            processed: eventsProcessed,
-            failed: eventsFailed,
+            processed: processedCount,
+            failed: failedCount,
             rate_per_sec: rate,
             uptime_sec: uptimeSeconds,
         });
     }, 30000);
 
+    // Metrics endpoint
+    const metricsServer = Bun.serve({
+        port: config.queue.concurrency > 1 ? 8091 : 8090, // Avoid port conflicts
+        fetch: (req) => {
+            const url = new URL(req.url);
+
+            if (url.pathname === '/health') {
+                return Response.json({
+                    status: 'healthy',
+                    mode: 'redis-streams',
+                    consumerId,
+                    processed: processedCount,
+                    failed: failedCount,
+                });
+            }
+
+            if (url.pathname === '/metrics') {
+                return new Response(registry.getMetrics(), {
+                    headers: { 'Content-Type': 'text/plain; version=0.0.4' },
+                });
+            }
+
+            return new Response('Not Found', { status: 404 });
+        },
+    });
+
+    logger.info(`Metrics server on port ${metricsServer.port}`);
+
     // Graceful shutdown
     const shutdown = async () => {
         logger.info('Shutting down...');
 
+        signal.stop = true;
         clearInterval(statsInterval);
 
-        await worker.close();
+        // Wait for consumer loop to finish
+        await consumerPromise;
+
+        // Flush ClickHouse buffer
         await clickhouseWriter.close();
+
+        // Close connections
+        metricsServer.stop();
         await redis.quit();
 
         logger.info('Shutdown complete', {
-            processed: eventsProcessed,
-            failed: eventsFailed,
+            processed: processedCount,
+            failed: failedCount,
         });
 
         process.exit(0);

@@ -1,7 +1,7 @@
 {
     "name": "@esports/state-consumer",
     "version": "1.0.0",
-    "description": "Event consumer - processes events and maintains live match state",
+    "description": "Event consumer - Redis Streams based, maintains live match state",
     "type": "module",
     "main": "./src/index.ts",
     "scripts": {
@@ -13,7 +13,6 @@
     "dependencies": {
         "@esports/shared": "workspace:*",
         "@clickhouse/client": "^0.2.7",
-        "bullmq": "^5.1.1",
         "ioredis": "^5.3.2"
     },
     "devDependencies": {

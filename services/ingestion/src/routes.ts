@@ -1,12 +1,12 @@
 /**
- * Ingestion API Routes
+ * Ingestion API Routes (Redis Streams version)
+ * 
+ * Uses Redis Streams instead of BullMQ for strict ordering.
  */
 
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
-import { BaseEventSchema, validateEvent, createLogger } from '@esports/shared';
-import type { QueueManager } from './queue';
+import { validateEvent, createLogger } from '@esports/shared';
+import type { StreamPublisher } from './stream';
 import type { DedupService } from './dedup';
 import * as metrics from './metrics';
 import { config } from './config';
@@ -14,27 +14,22 @@ import { config } from './config';
 const logger = createLogger('ingestion:routes', config.logLevel as 'debug' | 'info');
 
 interface RouteDeps {
-    queue: QueueManager;
+    stream: StreamPublisher;
     dedup: DedupService;
 }
 
 export function createRoutes(deps: RouteDeps): Hono {
     const app = new Hono();
-    const { queue, dedup } = deps;
+    const { stream, dedup } = deps;
 
     // Health check
     app.get('/health', async (c) => {
-        try {
-            const stats = await queue.getStats();
-            return c.json({
-                status: 'healthy',
-                version: '1.0.0',
-                uptime: process.uptime(),
-                queue: stats,
-            });
-        } catch (error) {
-            return c.json({ status: 'unhealthy', error: String(error) }, 503);
-        }
+        return c.json({
+            status: 'healthy',
+            version: '1.0.0',
+            mode: 'redis-streams',
+            uptime: process.uptime(),
+        });
     });
 
     // Prometheus metrics
@@ -89,8 +84,8 @@ export function createRoutes(deps: RouteDeps): Hono {
                 );
             }
 
-            // Enqueue
-            const jobId = await queue.enqueue(event);
+            // Publish to Redis Stream
+            const streamId = await stream.publish(event);
 
             // Mark as seen
             await dedup.markSeen(event.event_id);
@@ -101,17 +96,19 @@ export function createRoutes(deps: RouteDeps): Hono {
             const latency = performance.now() - startTime;
             metrics.processingLatency.observe(latency, { type: event.type });
 
-            logger.info('Event ingested', {
+            logger.info('Event published to stream', {
                 event_id: event.event_id,
                 type: event.type,
                 match_id: event.match_id,
+                map_id: event.map_id,
+                stream_id: streamId,
                 latency_ms: latency.toFixed(2),
             });
 
             return c.json({
                 success: true,
                 event_id: event.event_id,
-                job_id: jobId,
+                stream_id: streamId,
                 latency_ms: latency,
             });
 
@@ -170,6 +167,7 @@ export function createRoutes(deps: RouteDeps): Hono {
             const results: Array<{
                 event_id: string;
                 success: boolean;
+                stream_id?: string;
                 duplicate?: boolean;
                 error?: string;
             }> = [];
@@ -207,7 +205,7 @@ export function createRoutes(deps: RouteDeps): Hono {
                 }
 
                 try {
-                    await queue.enqueue(event);
+                    const streamId = await stream.publish(event);
                     await dedup.markSeen(event.event_id);
 
                     processed++;
@@ -216,20 +214,21 @@ export function createRoutes(deps: RouteDeps): Hono {
                     results.push({
                         event_id: event.event_id,
                         success: true,
+                        stream_id: streamId,
                     });
                 } catch (err) {
                     errors++;
                     results.push({
                         event_id: event.event_id,
                         success: false,
-                        error: 'Queue error',
+                        error: 'Stream error',
                     });
                 }
             }
 
             const latency = performance.now() - startTime;
 
-            logger.info('Batch ingested', {
+            logger.info('Batch published to stream', {
                 total: body.length,
                 processed,
                 duplicates,
@@ -264,10 +263,12 @@ export function createRoutes(deps: RouteDeps): Hono {
         }
     });
 
-    // Queue stats
+    // Stream stats
     app.get('/stats', async (c) => {
-        const stats = await queue.getStats();
-        return c.json(stats);
+        return c.json({
+            mode: 'redis-streams',
+            uptime: process.uptime(),
+        });
     });
 
     return app;

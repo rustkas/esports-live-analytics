@@ -1,40 +1,34 @@
 /**
  * Ingestion Service
  * 
- * Receives live CS2 match events via HTTP, validates them,
- * deduplicates using Redis, and queues them for processing.
+ * HTTP intake for CS2 game events.
+ * Validates events, deduplicates, and publishes to Redis Streams.
  * 
- * Endpoints:
- * - POST /events - Single event ingestion
- * - POST /events/batch - Batch ingestion (up to 100 events)
- * - GET /health - Health check
- * - GET /metrics - Prometheus metrics
- * - GET /stats - Queue statistics
+ * Uses Redis Streams for strict ordering guarantees per shard.
  */
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger as honoLogger } from 'hono/logger';
 import Redis from 'ioredis';
 import { createLogger } from '@esports/shared';
 import { config } from './config';
-import { createQueueManager } from './queue';
-import { createDedupService } from './dedup';
 import { createRoutes } from './routes';
+import { createStreamPublisher } from './stream';
+import { createDedupService } from './dedup';
 
 const logger = createLogger('ingestion', config.logLevel as 'debug' | 'info');
 
 async function main() {
-    logger.info('Starting Ingestion Service', {
+    logger.info('Starting Ingestion Service (Redis Streams mode)', {
         port: config.port,
         redis: config.redis.url,
     });
 
     // Connect to Redis
     const redis = new Redis(config.redis.url, {
-        maxRetriesPerRequest: null, // Required for BullMQ
-        enableReadyCheck: false,
         lazyConnect: true,
+        maxRetriesPerRequest: 3,
+        retryStrategy: (times) => Math.min(times * 100, 3000),
     });
 
     redis.on('error', (err) => {
@@ -47,22 +41,20 @@ async function main() {
 
     await redis.connect();
 
-    // Initialize services
-    const queue = createQueueManager(redis);
+    // Initialize components
+    const stream = createStreamPublisher(redis);
+    await stream.init();
+
     const dedup = createDedupService(redis);
+
+    logger.info('Stream publisher and dedup service initialized');
 
     // Create Hono app
     const app = new Hono();
-
-    // Middleware
     app.use('*', cors());
 
-    if (process.env.NODE_ENV !== 'production') {
-        app.use('*', honoLogger());
-    }
-
     // Mount routes
-    const routes = createRoutes({ queue, dedup });
+    const routes = createRoutes({ stream, dedup });
     app.route('/', routes);
 
     // Start server
@@ -73,13 +65,14 @@ async function main() {
     });
 
     logger.info(`Ingestion Service listening on ${config.host}:${config.port}`);
+    logger.info('Mode: Redis Streams (strict ordering per shard)');
 
     // Graceful shutdown
     const shutdown = async () => {
         logger.info('Shutting down...');
 
         server.stop();
-        await queue.close();
+        await stream.close();
         await redis.quit();
 
         logger.info('Shutdown complete');
