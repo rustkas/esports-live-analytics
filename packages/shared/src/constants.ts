@@ -126,3 +126,54 @@ export const SIGNIFICANT_EVENTS = [
 export function isPredictionTrigger(eventType: string): boolean {
     return SIGNIFICANT_EVENTS.includes(eventType as typeof SIGNIFICANT_EVENTS[number]);
 }
+
+// ============================================
+// Service Level Objectives (SLO)
+// ============================================
+
+export const SLO = {
+    // Latency targets (milliseconds)
+    E2E_LATENCY_P95_MS: 500,
+    E2E_LATENCY_P99_MS: 1000,
+    E2E_LATENCY_WARNING_MS: 300,
+
+    // Error rate targets (percentage)
+    ERROR_RATE_MAX_PERCENT: 0.1,
+    ERROR_RATE_WARNING_PERCENT: 0.05,
+
+    // Availability target (percentage)
+    AVAILABILITY_TARGET_PERCENT: 99.9,
+
+    // Measurement windows (milliseconds)
+    MEASUREMENT_WINDOW_MS: 5 * 60 * 1000, // 5 minutes
+
+    // Latency budget per stage (milliseconds, p95)
+    BUDGET: {
+        INGESTION_MS: 20,
+        STREAM_QUEUE_MS: 50,
+        STATE_UPDATE_MS: 30,
+        CLICKHOUSE_MS: 100,  // async
+        PREDICTION_MS: 50,
+        PUBSUB_MS: 10,
+        BUFFER_MS: 240,
+    },
+} as const;
+
+// Check if latency meets SLO
+export function meetsLatencySLO(latencyMs: number): boolean {
+    return latencyMs <= SLO.E2E_LATENCY_P95_MS;
+}
+
+// Get latency status
+export function getLatencyStatus(p95LatencyMs: number): 'healthy' | 'warning' | 'critical' {
+    if (p95LatencyMs <= SLO.E2E_LATENCY_WARNING_MS) return 'healthy';
+    if (p95LatencyMs <= SLO.E2E_LATENCY_P95_MS) return 'warning';
+    return 'critical';
+}
+
+// Get error rate status
+export function getErrorRateStatus(errorRatePercent: number): 'healthy' | 'warning' | 'critical' {
+    if (errorRatePercent <= SLO.ERROR_RATE_WARNING_PERCENT) return 'healthy';
+    if (errorRatePercent <= SLO.ERROR_RATE_MAX_PERCENT) return 'warning';
+    return 'critical';
+}

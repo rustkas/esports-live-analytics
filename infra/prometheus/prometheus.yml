@@ -5,14 +5,15 @@ global:
   external_labels:
     monitor: 'esports-analytics'
 
-# Alertmanager configuration (optional)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: []
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # Add alertmanager:9093 when deployed
 
-# Load rules
-# rule_files: []
+# Load SLO alert and recording rules
+rule_files:
+  - '/etc/prometheus/alerts.yml'
 
 # Scrape configs
 scrape_configs:
@@ -25,6 +26,12 @@ scrape_configs:
   - job_name: 'ingestion'
     static_configs:
       - targets: ['ingestion:8081']
+    metrics_path: '/metrics'
+
+  # State Consumer service
+  - job_name: 'state-consumer'
+    static_configs:
+      - targets: ['state-consumer:8090']
     metrics_path: '/metrics'
 
   # Analytics service
