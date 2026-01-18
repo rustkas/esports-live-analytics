@@ -1,0 +1,37 @@
+version: '3.8'
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  ingestion:
+    restart: always
+    logging: *default-logging
+
+  state-consumer:
+    restart: always
+    logging: *default-logging
+
+  analytics:
+    restart: always
+    logging: *default-logging
+
+  predictor:
+    restart: always
+    logging: *default-logging
+
+  api-gateway:
+    restart: always
+    logging: *default-logging
+
+  postgres:
+    logging: *default-logging
+
+  redis:
+    logging: *default-logging
+
+  clickhouse:
+    logging: *default-logging

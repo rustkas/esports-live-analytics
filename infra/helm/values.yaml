@@ -1,0 +1,64 @@
+# Default values for esports-analytics
+replicaCount:
+  ingestion: 2
+  stateConsumer: 1
+  apiGateway: 2
+  analytics: 1
+  predictor: 1
+
+image:
+  registry: ghcr.io
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+secrets:
+  redisPassword: ""
+  postgresPassword: ""
+  adminApiKey: ""
+  providerSecret: ""
+
+ingestion:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+
+stateConsumer:
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+apiGateway:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+
+postgresql:
+  enabled: true
+  auth:
+    database: esports
+
+clickhouse:
+  enabled: false  # Use external ClickHouse
+  externalHost: ""

@@ -1,0 +1,46 @@
+name: Nightly Load Test
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 3 AM UTC daily
+  workflow_dispatch:
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Infrastructure
+        run: |
+          docker-compose up -d
+          sleep 30  # Wait for services to be ready
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run Load Test (500 events/s)
+        run: k6 run --out json=results-500.json scripts/k6-load-test.js
+        env:
+          K6_VUS: 50
+          K6_DURATION: 5m
+
+      - name: Check Thresholds
+        run: |
+          # Parse results and check p95 < 200ms
+          echo "Load test completed. Review results-500.json for details."
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: results-*.json
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose down -v

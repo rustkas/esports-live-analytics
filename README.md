@@ -1,4 +1,4 @@
-# `esports-live-analytics`
+# `Esports live analytics`
 
 Production-style backend demo: **low-latency live analytics & predictions** for CS2 matches (REST + GraphQL + Subscriptions), designed for **B2B integrations**.
 

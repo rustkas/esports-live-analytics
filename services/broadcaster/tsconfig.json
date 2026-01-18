@@ -1,8 +1,19 @@
 {
-    "extends": "../../tsconfig.json",
     "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "noUncheckedIndexedAccess": true,
+        "resolveJsonModule": true,
+        "declaration": true,
         "outDir": "./dist",
-        "rootDir": "./src"
+        "rootDir": "./src",
+        "types": [
+            "bun-types"
+        ]
     },
     "include": [
         "src/**/*"
