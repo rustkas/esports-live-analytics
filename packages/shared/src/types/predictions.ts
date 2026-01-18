@@ -44,6 +44,9 @@ export interface Prediction {
 
     /** Features used (for debugging/audit) */
     features?: PredictionFeatures;
+
+    /** State version this prediction is based on */
+    state_version: number;
 }
 
 // ============================================
@@ -146,6 +149,9 @@ export interface MatchState {
 
     // History
     round_history: RoundResult[];
+
+    // Versioning (monotonic)
+    state_version: number;
 }
 
 export interface RoundResult {

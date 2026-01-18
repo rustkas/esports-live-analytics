@@ -88,6 +88,7 @@ export const typeDefs = /* GraphQL */ `
     
     modelVersion: String!
     calculatedAt: String!
+    stateVersion: Int!
   }
 
   type PredictionHistory {
@@ -105,6 +106,7 @@ export const typeDefs = /* GraphQL */ `
     pTeamBWin: Float!
     confidence: Float!
     triggerEventType: String
+    stateVersion: Int
   }
 
   type RoundMetrics {
@@ -127,6 +129,7 @@ export const typeDefs = /* GraphQL */ `
     confidence: Float!
     triggerEventType: String
     timestamp: String!
+    stateVersion: Int!
   }
 
   type ScoreUpdate {

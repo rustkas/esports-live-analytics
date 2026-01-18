@@ -224,6 +224,7 @@ export function createResolvers(ctx: ResolverContext) {
             teamBWinProbability: (p: Record<string, unknown>) => p.p_team_b_win,
             modelVersion: (p: Record<string, unknown>) => p.model_version,
             calculatedAt: (p: Record<string, unknown>) => p.ts_calc,
+            stateVersion: (p: Record<string, unknown>) => p.state_version,
         },
 
         // Field resolvers for PredictionHistory
@@ -232,6 +233,17 @@ export function createResolvers(ctx: ResolverContext) {
             mapId: (h: Record<string, unknown>) => h.map_id,
             teamAId: (h: Record<string, unknown>) => h.team_a_id,
             teamBId: (h: Record<string, unknown>) => h.team_b_id,
+        },
+
+        // Field resolvers for PredictionPoint
+        PredictionPoint: {
+            tsCalc: (p: Record<string, unknown>) => p.ts_calc,
+            roundNo: (p: Record<string, unknown>) => p.round_no,
+            pTeamAWin: (p: Record<string, unknown>) => p.p_team_a_win,
+            pTeamBWin: (p: Record<string, unknown>) => p.p_team_b_win,
+            confidence: (p: Record<string, unknown>) => p.confidence,
+            triggerEventType: (p: Record<string, unknown>) => p.trigger_event_type,
+            stateVersion: (p: Record<string, unknown>) => p.state_version,
         },
 
         // Field resolvers for RoundMetrics
@@ -252,6 +264,8 @@ export function createResolvers(ctx: ResolverContext) {
                     const subscriber = redis.duplicate();
                     await subscriber.subscribe(REDIS_KEYS.predictionUpdates(matchId));
 
+                    let lastVersion = 0;
+
                     try {
                         while (true) {
                             const message = await new Promise<string | null>((resolve) => {
@@ -262,18 +276,26 @@ export function createResolvers(ctx: ResolverContext) {
 
                             if (message) {
                                 const data = JSON.parse(message);
-                                yield {
-                                    predictionUpdated: {
-                                        matchId: data.match_id,
-                                        mapId: data.data?.map_id,
-                                        roundNo: data.data?.round_no,
-                                        teamAWinProbability: data.data?.p_team_a_win,
-                                        teamBWinProbability: data.data?.p_team_b_win,
-                                        confidence: data.data?.confidence,
-                                        triggerEventType: data.data?.trigger_event_type,
-                                        timestamp: data.timestamp,
-                                    },
-                                };
+                                const currentVersion = data.data?.state_version || 0;
+
+                                // Only emit if version is newer (monotonicity check)
+                                if (currentVersion > lastVersion) {
+                                    lastVersion = currentVersion;
+
+                                    yield {
+                                        predictionUpdated: {
+                                            matchId: data.match_id,
+                                            mapId: data.data?.map_id,
+                                            roundNo: data.data?.round_no,
+                                            teamAWinProbability: data.data?.p_team_a_win,
+                                            teamBWinProbability: data.data?.p_team_b_win,
+                                            confidence: data.data?.confidence,
+                                            triggerEventType: data.data?.trigger_event_type,
+                                            timestamp: data.timestamp,
+                                            stateVersion: currentVersion,
+                                        },
+                                    };
+                                }
                             }
                         }
                     } finally {

@@ -65,6 +65,7 @@ export function createPredictionModel(): PredictionModel {
                 round_no: state.current_round,
                 ts_calc: new Date().toISOString(),
                 model_version: config.model.version,
+                state_version: state.state_version,
                 team_a_id: state.team_a_id,
                 team_b_id: state.team_b_id,
                 p_team_a_win: round(pTeamAWin, 4),

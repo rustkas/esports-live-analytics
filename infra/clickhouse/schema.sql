@@ -75,11 +75,15 @@ CREATE TABLE IF NOT EXISTS cs2_predictions
     
     features String DEFAULT '{}',  -- JSON
     trigger_event_id String DEFAULT '',
-    trigger_event_type LowCardinality(String) DEFAULT ''
+    trigger_event_type LowCardinality(String) DEFAULT '',
+    
+    -- Versioning for upserts
+    prediction_id UUID DEFAULT generateUUIDv4(),
+    version UInt64 DEFAULT toUnixTimestamp64Milli(now64(3))
 )
-ENGINE = MergeTree()
+ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
-ORDER BY (match_id, map_id, ts_calc)
+ORDER BY (match_id, map_id, ts_calc, model_version)
 TTL date + INTERVAL 180 DAY
 SETTINGS index_granularity = 8192;
 

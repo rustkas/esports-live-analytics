@@ -45,6 +45,9 @@ export function createStateManager(redis: Redis): StateManager {
         // Update state based on event type
         state = applyEvent(state, event);
 
+        // Increment version
+        state.state_version = (state.state_version || 0) + 1;
+
         // Save updated state
         await saveMatchState(state);
 
@@ -53,6 +56,7 @@ export function createStateManager(redis: Redis): StateManager {
             event_type: event.type,
             round: state.current_round,
             score: `${state.team_a_score}-${state.team_b_score}`,
+            version: state.state_version,
         });
 
         return state;
@@ -112,6 +116,8 @@ function createInitialState(event: BaseEvent): MatchState {
         last_event_at: event.ts_event,
 
         round_history: [],
+
+        state_version: 0,
     };
 }
 
