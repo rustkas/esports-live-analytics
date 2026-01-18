@@ -17,6 +17,37 @@ export const PAYLOAD_LIMITS = {
     MAX_BATCH_SIZE: 100, // Batch limit
 } as const;
 
+/**
+ * Operational Modes for incident handling
+ */
+export const OPERATIONAL_MODES = {
+    /** Normal operation */
+    NORMAL: 'normal',
+    /** Reduced publish rate (50%), skip non-critical processing */
+    INCIDENT: 'incident',
+    /** Serve from cache only, reject writes */
+    DEGRADED: 'degraded',
+    /** Read-only mode, all writes rejected */
+    READONLY: 'readonly',
+} as const;
+
+export type OperationalMode = typeof OPERATIONAL_MODES[keyof typeof OPERATIONAL_MODES];
+
+/**
+ * Client Tier definitions
+ */
+export const CLIENT_TIERS = {
+    SILVER: 'silver',
+    GOLD: 'gold',
+    PLATINUM: 'platinum',
+} as const;
+
+export const TIER_LIMITS = {
+    silver: { rpm: 100, wsConnections: 10, quotaMonthly: 10_000_000 },
+    gold: { rpm: 1000, wsConnections: 100, quotaMonthly: 100_000_000 },
+    platinum: { rpm: Infinity, wsConnections: Infinity, quotaMonthly: Infinity },
+} as const;
+
 // ============================================
 // Redis Keys
 // ============================================
