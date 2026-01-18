@@ -21,6 +21,7 @@ import {
 } from '@esports/shared';
 import { config } from './config';
 import { createQueryService } from './queries';
+import { createCachedQueryService } from './cache';
 
 const logger = createLogger('analytics', config.logLevel as 'debug' | 'info');
 const metrics = createProductionMetrics('analytics');
@@ -45,7 +46,8 @@ async function main() {
     logger.info('Connected to Redis');
 
     // Initialize query service
-    const queries = createQueryService();
+    const baseQueries = createQueryService();
+    const queries = createCachedQueryService(baseQueries, redis);
 
     // Health checks
     const health = createHealthChecks(SERVICE_VERSION, [

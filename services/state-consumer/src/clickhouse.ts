@@ -24,6 +24,7 @@ export function createClickHouseWriter(): ClickHouseWriter {
         clickhouse_settings: {
             async_insert: 1,
             wait_for_async_insert: 0,
+            max_partitions_per_insert_block: 100, // Safety limit
         },
     });
 
@@ -60,8 +61,9 @@ export function createClickHouseWriter(): ClickHouseWriter {
                     round_no: event.round_no,
                     type: event.type,
                     payload: JSON.stringify(event.payload),
-                    processed_at: new Date().toISOString(),
-                    processor_version: 'v1',
+                    trace_id: event.context?.trace_id || '',
+                    // Use ts_event millis as version for ReplacingMergeTree
+                    version: new Date(event.ts_event).getTime(),
                 })),
                 format: 'JSONEachRow',
             });

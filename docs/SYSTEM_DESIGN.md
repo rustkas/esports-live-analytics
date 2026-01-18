@@ -98,3 +98,24 @@ Event → Ingestion → Redis Queue → State Consumer → Redis State → Predi
 3. **gRPC**: For internal service communication
 4. **Kubernetes**: For production deployment
 5. **Multi-region**: For global latency optimization
+
+### 9. Event Ordering & Consistency Strategy
+
+To ensure state consistency in a distributed environment, we implement a strict ordering strategy:
+
+1.  **Source of Truth**: `seq_no` provided by the data source.
+    -   Monotonically increasing integer per match/map.
+2.  **Sharding**: `CRC32(match_id + map_id)`.
+    -   Guarantees all events for a match go to the same shard (stream).
+3.  **Concurrency Control**:
+    -   **Distributed Locks** (`shard:lock:{shard_id}`): Ensures strictly ONE consumer processes a shard at a time.
+    -   **NO parallel processing** within a single match.
+4.  **Sequence Validation**:
+    -   Consumer maintains `last_seq` in Redis.
+    -   **Gap Detection**: If `input_seq > last_seq + 1`, buffer the event (up to `2s`).
+    -   **Reordering**: If missing packet arrives within window, process buffer.
+    -   **Late/Duplicate**: If `input_seq <= last_seq`, treat as idempotent duplicate (discard).
+5.  **State Versioning**:
+    -   Match State has `state_version` (incremented on update).
+    -   Predictions include `state_version`.
+    -   Clients can filter stale updates based on version.
