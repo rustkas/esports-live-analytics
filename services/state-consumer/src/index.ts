@@ -40,6 +40,12 @@ async function main() {
 
     await redis.connect();
 
+    // Create a separate connection for the worker
+    const workerRedis = new Redis(config.redis.url, {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+    });
+
     // Initialize components
     const stateManager = createStateManager(redis);
     const clickhouseWriter = createClickHouseWriter();
@@ -91,7 +97,7 @@ async function main() {
             }
         },
         {
-            connection: redis.duplicate(),
+            connection: workerRedis,
             concurrency: config.queue.concurrency,
             limiter: {
                 max: 1000,
@@ -138,6 +144,7 @@ async function main() {
 
         await worker.close();
         await clickhouseWriter.close();
+        await workerRedis.quit();
         await redis.quit();
 
         logger.info('Shutdown complete', {

@@ -62,7 +62,7 @@ async function main() {
     // Prometheus metrics
     app.get('/metrics', (c) => {
         c.header('Content-Type', 'text/plain; version=0.0.4');
-        return c.text(metrics.registry.metrics());
+        return c.text(metrics.registry.getMetrics());
     });
 
     // Calculate prediction

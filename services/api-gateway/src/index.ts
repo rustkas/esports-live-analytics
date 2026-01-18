@@ -70,7 +70,6 @@ async function main() {
         landingPage: true,
         graphiql: {
             title: 'CS2 Analytics GraphQL',
-            subscriptionsProtocol: 'WS',
         },
     });
 
@@ -97,7 +96,7 @@ async function main() {
 
     // Health check
     app.get('/health', async (c) => {
-        const checks = [];
+        const checks: Array<{ name: string; status: string }> = [];
 
         // Check Redis
         try {
@@ -115,7 +114,7 @@ async function main() {
             checks.push({ name: 'postgres', status: 'fail' });
         }
 
-        const allPass = checks.every(c => c.status === 'pass');
+        const allPass = checks.every(check => check.status === 'pass');
 
         return c.json({
             status: allPass ? 'healthy' : 'degraded',
@@ -128,7 +127,7 @@ async function main() {
     // Prometheus metrics
     app.get('/metrics', (c) => {
         c.header('Content-Type', 'text/plain; version=0.0.4');
-        return c.text(registry.metrics());
+        return c.text(registry.getMetrics());
     });
 
     // REST API routes
@@ -137,38 +136,21 @@ async function main() {
 
     // GraphQL endpoint
     app.on(['GET', 'POST'], '/graphql', async (c) => {
-        const response = await yoga.handle(c.req.raw, {
+        const response = await yoga.fetch(c.req.raw, {
             db,
             redis,
         });
-        return response;
+        return new Response(response.body, {
+            status: response.status,
+            headers: response.headers,
+        });
     });
 
-    // WebSocket for GraphQL subscriptions
-    app.get('/graphql/ws', async (c) => {
-        // Note: In production, you'd use a proper WebSocket library
-        // For Bun, this would be handled differently
-        return c.text('WebSocket endpoint - use graphql-ws client', 400);
-    });
-
-    // Start server
+    // Start server using native Bun API
     const server = Bun.serve({
         port: config.port,
         hostname: config.host,
         fetch: app.fetch,
-        // WebSocket support for subscriptions
-        websocket: {
-            message(ws, message) {
-                // Handle GraphQL subscription messages
-                logger.debug('WebSocket message', { message: String(message) });
-            },
-            open(ws) {
-                logger.debug('WebSocket opened');
-            },
-            close(ws) {
-                logger.debug('WebSocket closed');
-            },
-        },
     });
 
     logger.info(`API Gateway listening on ${config.host}:${config.port}`);
