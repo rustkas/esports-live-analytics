@@ -26,7 +26,25 @@ export type EventType =
     | 'economy_update';
 
 // ============================================
-// Base Event Structure
+// Raw Event (Input)
+// ============================================
+export interface RawEvent {
+    type: string;
+    payload: unknown;
+    ts: string;
+    external_id?: string;
+    source?: string;
+    seq?: number;
+}
+
+export interface EventContext {
+    trace_id: string;
+    ingest_pod_id?: string;
+    processed_at?: string;
+}
+
+// ============================================
+// Normalized Event Structure (Internal)
 // ============================================
 export interface BaseEvent<T = Record<string, unknown>> {
     /** Unique event identifier (for idempotency) */
@@ -58,6 +76,9 @@ export interface BaseEvent<T = Record<string, unknown>> {
 
     /** Event-specific data */
     payload: T;
+
+    /** Tracing and Processing Context */
+    context?: EventContext;
 }
 
 // ============================================

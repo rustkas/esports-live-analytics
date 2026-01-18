@@ -24,6 +24,23 @@ CREATE INDEX idx_teams_name ON teams(name);
 CREATE INDEX idx_teams_rating ON teams(rating DESC);
 
 -- ============================================
+-- 0. Tournaments
+-- ============================================
+CREATE TABLE IF NOT EXISTS tournaments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    short_name VARCHAR(50),
+    organizer VARCHAR(100),
+    tier VARCHAR(20), -- 'S', 'A', 'B'
+    start_date DATE,
+    end_date DATE,
+    prize_pool DECIMAL(15, 2),
+    currency VARCHAR(3) DEFAULT 'USD',
+    logo_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
 -- 2. Players
 -- ============================================
 CREATE TABLE IF NOT EXISTS players (
@@ -55,7 +72,8 @@ CREATE TABLE IF NOT EXISTS matches (
     team_b_id UUID NOT NULL REFERENCES teams(id),
     
     -- Match info
-    tournament_name VARCHAR(255),
+    tournament_id UUID REFERENCES tournaments(id),
+    tournament_name VARCHAR(255), -- Denormalized fallback
     format match_format DEFAULT 'bo3',
     status match_status DEFAULT 'scheduled',
     
@@ -74,7 +92,9 @@ CREATE TABLE IF NOT EXISTS matches (
     source VARCHAR(50),
     
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(source, external_id)
 );
 
 CREATE INDEX idx_matches_status ON matches(status);
@@ -119,9 +139,13 @@ CREATE INDEX idx_match_maps_status ON match_maps(status);
 -- ============================================
 -- 5. Model Versions (Predictor)
 -- ============================================
-CREATE TABLE IF NOT EXISTS model_versions (
+-- ============================================
+-- 5. Models (Predictor)
+-- ============================================
+CREATE TABLE IF NOT EXISTS models (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    version VARCHAR(50) NOT NULL UNIQUE,
+    version VARCHAR(50) NOT NULL UNIQUE, -- SemVer
+    featureset_version VARCHAR(50) NOT NULL,
     name VARCHAR(255),
     description TEXT,
     
@@ -142,7 +166,40 @@ CREATE TABLE IF NOT EXISTS model_versions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_model_versions_active ON model_versions(is_active);
+CREATE INDEX idx_models_active ON models(is_active);
+CREATE INDEX idx_models_version ON models(version);
+
+-- 5.1 Model Rollouts
+CREATE TABLE IF NOT EXISTS model_rollouts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    model_id UUID NOT NULL REFERENCES models(id),
+    client_id UUID REFERENCES api_clients(id), -- NULL means global default
+    
+    canary_percentage INTEGER DEFAULT 0 CHECK (canary_percentage >= 0 AND canary_percentage <= 100),
+    is_active BOOLEAN DEFAULT true,
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.2 Feature Flags
+-- ============================================
+CREATE TABLE IF NOT EXISTS feature_flags (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    
+    client_id UUID REFERENCES api_clients(id), -- NULL for global flag
+    
+    is_enabled BOOLEAN DEFAULT false,
+    value JSONB, -- Optional config value
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    UNIQUE(name, client_id) -- One flag setting per client (or global if null)
+);
 
 -- ============================================
 -- 6. API Clients (B2B)
@@ -150,15 +207,17 @@ CREATE INDEX idx_model_versions_active ON model_versions(is_active);
 CREATE TABLE IF NOT EXISTS api_clients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
-    api_key VARCHAR(64) NOT NULL UNIQUE,
-    api_secret VARCHAR(128) NOT NULL,
+    -- api_key/secret migrated to api_keys table but kept here for legacy/simple auth during transition
+    legacy_api_key VARCHAR(64), 
     
     -- Permissions
     scopes TEXT[] DEFAULT ARRAY['read'], -- 'read', 'write', 'admin'
     
-    -- Rate limiting
+    -- Rate limiting (Quotas)
     rate_limit_per_minute INTEGER DEFAULT 60,
     rate_limit_per_day INTEGER DEFAULT 10000,
+    quota_limit_monthly INTEGER DEFAULT 1000000,
+    quota_used_monthly INTEGER DEFAULT 0,
     
     -- Contact
     email VARCHAR(255),
@@ -172,8 +231,27 @@ CREATE TABLE IF NOT EXISTS api_clients (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_api_clients_key ON api_clients(api_key);
 CREATE INDEX idx_api_clients_active ON api_clients(is_active);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    client_id UUID NOT NULL REFERENCES api_clients(id) ON DELETE CASCADE,
+    
+    key_hash VARCHAR(64) NOT NULL UNIQUE,
+    key_prefix VARCHAR(10) NOT NULL,
+    
+    name VARCHAR(100),
+    scopes TEXT[],
+    
+    expires_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT true,
+    
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX idx_api_keys_client ON api_keys(client_id);
 
 -- ============================================
 -- 7. Event Log (for debugging/audit)

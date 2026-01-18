@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS cs2_events_raw
     -- Partition key
     date Date DEFAULT toDate(ts_event),
     
+    -- Materialized columns for fast access/debug
+    event_day Date MATERIALIZED toDate(ts_event),
+    event_hour DateTime MATERIALIZED toStartOfHour(ts_event),
+    ingest_partition UInt32 MATERIALIZED toYYYYMMDD(ts_ingest),
+    
     -- Event identification
     event_id UUID,
     match_id UUID,
@@ -42,7 +47,7 @@ CREATE TABLE IF NOT EXISTS cs2_events_raw
 )
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
-ORDER BY (match_id, map_id, ts_event, event_id)
+ORDER BY (match_id, map_id, round_no, ts_event, event_id)
 TTL date + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
