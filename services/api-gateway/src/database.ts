@@ -11,7 +11,7 @@ const logger = createLogger('api-gateway:db', config.logLevel as 'debug' | 'info
 export function createDatabase(): Pool {
     const pool = new Pool({
         connectionString: config.postgres.url,
-        max: 10,
+        max: config.postgres.poolSize,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
     });

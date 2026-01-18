@@ -15,6 +15,7 @@ export const config = {
     // PostgreSQL
     postgres: {
         url: process.env.POSTGRES_URL ?? 'postgres://postgres:postgres@localhost:5432/esports',
+        poolSize: parseInt(process.env.POSTGRES_POOL_SIZE ?? '10', 10),
     },
 
     // Internal services

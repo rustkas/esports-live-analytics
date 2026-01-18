@@ -91,7 +91,14 @@ CREATE TABLE IF NOT EXISTS cs2_events_parsed
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(date)
 ORDER BY (match_id, map_id, round_no, ts_event)
-TTL date + INTERVAL 180 DAY;
+TTL date + INTERVAL 180 DAY
+SETTINGS index_granularity = 8192;
+
+ALTER TABLE cs2_events_parsed ADD PROJECTION p_last_events
+(
+    SELECT *
+    ORDER BY match_id, ts_event DESC
+);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_events_parsed
 TO cs2_events_parsed
