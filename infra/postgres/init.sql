@@ -199,6 +199,54 @@ CREATE INDEX idx_event_log_match ON event_processing_log(match_id);
 CREATE INDEX idx_event_log_status ON event_processing_log(status) WHERE status = 'failed';
 
 -- ============================================
+-- 8. Schema Versions (API Contract Versioning)
+-- ============================================
+CREATE TYPE schema_type AS ENUM ('event', 'api_request', 'api_response', 'webhook');
+CREATE TYPE schema_status AS ENUM ('draft', 'active', 'deprecated', 'retired');
+
+CREATE TABLE IF NOT EXISTS schema_versions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    
+    -- Schema identification
+    schema_name VARCHAR(100) NOT NULL,
+    schema_type schema_type NOT NULL,
+    version VARCHAR(20) NOT NULL,
+    
+    -- Schema definition
+    json_schema JSONB NOT NULL,
+    description TEXT,
+    
+    -- Compatibility
+    is_backwards_compatible BOOLEAN DEFAULT true,
+    breaking_changes TEXT[],
+    
+    -- Lifecycle
+    status schema_status DEFAULT 'draft',
+    published_at TIMESTAMPTZ,
+    deprecated_at TIMESTAMPTZ,
+    sunset_at TIMESTAMPTZ, -- When this version will be removed
+    
+    -- Changelog
+    changelog TEXT,
+    migration_guide TEXT,
+    
+    -- Metadata
+    created_by VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    UNIQUE(schema_name, version)
+);
+
+CREATE INDEX idx_schema_versions_name ON schema_versions(schema_name);
+CREATE INDEX idx_schema_versions_status ON schema_versions(status);
+CREATE INDEX idx_schema_versions_active ON schema_versions(schema_name, status) WHERE status = 'active';
+
+CREATE TRIGGER schema_versions_updated_at
+    BEFORE UPDATE ON schema_versions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ============================================
 -- 8. Helper Functions
 -- ============================================
 
@@ -286,6 +334,33 @@ ON CONFLICT DO NOTHING;
 -- Insert demo API client
 INSERT INTO api_clients (name, api_key, api_secret, scopes, email) VALUES
     ('Demo Client', 'demo_api_key_12345', 'demo_secret_67890', ARRAY['read', 'write'], 'demo@example.com')
+ON CONFLICT DO NOTHING;
+
+-- Insert initial schema versions
+INSERT INTO schema_versions (schema_name, schema_type, version, json_schema, description, status, published_at) VALUES
+    ('base_event', 'event', '1.0.0', 
+     '{
+        "type": "object",
+        "required": ["event_id", "match_id", "map_id", "round_no", "ts_event", "type", "source", "seq_no", "payload"],
+        "properties": {
+            "event_id": {"type": "string", "format": "uuid"},
+            "match_id": {"type": "string", "format": "uuid"},
+            "map_id": {"type": "string", "format": "uuid"},
+            "round_no": {"type": "integer", "minimum": 0, "maximum": 50},
+            "ts_event": {"type": "string", "format": "date-time"},
+            "type": {"type": "string", "minLength": 1, "maxLength": 50},
+            "source": {"type": "string", "minLength": 1, "maxLength": 100},
+            "seq_no": {"type": "integer", "minimum": 0},
+            "payload": {"type": "object"},
+            "ts_ingest": {"type": "string", "format": "date-time"},
+            "trace_id": {"type": "string", "format": "uuid"},
+            "event_schema_version": {"type": "string", "default": "1.0.0"}
+        },
+        "additionalProperties": true
+     }',
+     'Base event schema for all CS2 game events',
+     'active',
+     NOW())
 ON CONFLICT DO NOTHING;
 
 -- ============================================
