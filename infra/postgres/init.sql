@@ -589,3 +589,18 @@ CREATE TABLE IF NOT EXISTS event_schemas (
     
     UNIQUE(event_type, version)
 );
+
+-- ============================================
+-- 11. Test Seeds
+-- ============================================
+
+-- Seed: Test Client for Contract Tests
+INSERT INTO api_clients (id, name, legacy_api_key, is_active, rate_limit_per_minute)
+VALUES ('99999999-9999-9999-9999-999999999999', 'Test Client', 'demo-test-key', true, 1000)
+ON CONFLICT DO NOTHING;
+
+-- Seed: Feature Flag
+INSERT INTO feature_flags (name, is_enabled)
+VALUES ('demo_feature_enabled', true)
+ON CONFLICT DO NOTHING;
+

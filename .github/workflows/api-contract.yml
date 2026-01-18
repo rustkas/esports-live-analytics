@@ -1,0 +1,64 @@
+name: API Contract Tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  contract-test:
+    runs-on: ubuntu-latest
+    
+    services:
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: esports
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: oven-sh/setup-bun@v1
+      
+      - name: Install dependencies
+        run: bun install
+        
+      - name: Initialize Database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d esports -f infra/postgres/init.sql
+          
+      - name: Start API Gateway
+        run: |
+          bun run services/api-gateway/src/index.ts > gateway.log 2>&1 &
+          echo $! > gateway.pid
+        env:
+          PORT: 8080
+          REDIS_URL: redis://localhost:6379
+          POSTGRES_URL: postgres://postgres:postgres@localhost:5432/esports
+          
+      - name: Wait for API to be ready
+        run: |
+          timeout 30s bash -c 'until curl -s http://localhost:8080/readyz; do sleep 1; done'
+          cat gateway.log
+          
+      - name: Run Contract Tests
+        run: bun run scripts/test-contract.ts
+        env:
+          API_URL: http://localhost:8080/api/v1
+          # Requires a key from seed. 
+          # We'll use a fixed key if we update init.sql, or test will skip protected routes.
+          TEST_API_KEY: demo-test-key 

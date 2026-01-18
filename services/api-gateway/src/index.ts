@@ -179,7 +179,10 @@ async function main() {
     // REST API
     // =====================================
 
-    const restRoutes = createRestRoutes(db, redis);
+    const { createFeatureFlagService } = await import('./flags');
+    const flags = createFeatureFlagService(redis, db);
+
+    const restRoutes = createRestRoutes(db, redis, flags);
     app.route('/api/v1', restRoutes);
 
     // =====================================

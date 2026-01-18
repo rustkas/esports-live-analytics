@@ -11,8 +11,23 @@ import type { DbMatch, DbTeam, DbMatchMap } from './database';
 
 const logger = createLogger('api-gateway:rest', config.logLevel as 'debug' | 'info');
 
-export function createRestRoutes(db: Pool, redis: Redis): Hono {
+import type { FeatureFlagService } from './flags';
+
+// ... 
+
+export function createRestRoutes(db: Pool, redis: Redis, flags: ReturnType<typeof import('./flags').createFeatureFlagService>): Hono {
     const app = new Hono();
+
+    // Middleware-like helper
+    const requireFlag = (name: string) => async (c: Context, next: any) => {
+        // Assume client is in context from Auth Middleware
+        const client = c.get('client');
+        const enabled = await flags.getFlag(name, client?.client_id);
+        if (!enabled) {
+            return c.json({ error: 'Feature disabled' }, 403);
+        }
+        await next();
+    };
 
     // Helper to fetch from internal services
     async function fetchService(url: string): Promise<unknown> {

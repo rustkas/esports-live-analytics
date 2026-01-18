@@ -242,6 +242,19 @@ Pre-configured dashboards in `infra/grafana/dashboards/`:
 
 ---
 
+## 🏛 API Stability & Versioning
+
+### Versioning
+The B2B API is versioned via the URI path: `/api/v1`.
+Breaking changes will result in a new major version (e.g., `/api/v2`).
+Check `docs/API.md` for detailed endpoint policies.
+
+### Stability Guarantees
+- **v1**: Stable. Supported for at least 12 months after deprecated.
+- **Experimental**: Headers `X-Esports-Beta` may enable unstable features.
+
+---
+
 ## 📝 License
 
 MIT
