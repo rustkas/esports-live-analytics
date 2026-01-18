@@ -50,8 +50,8 @@ export function createSecurityService(redis: Redis, db: Pool) {
             e.client_id,
             e.ip_address,
             e.user_agent,
-            e.action.split(':')[0] || 'UNKNOWN', // method?
-            e.action.split(':')[1] || e.resource, // path? 
+            e.method || 'UNKNOWN',
+            e.resource || '/',
             e.resource,
             e.action,
             e.status_code,
@@ -183,7 +183,6 @@ export function createAuthMiddleware(
             ip_address: c.req.header('CF-Connecting-IP') ?? 'unknown',
             user_agent: c.req.header('User-Agent'),
             method: c.req.method,
-            path: c.req.path,
             resource: c.req.path, // Simplification
             action: `${c.req.method}:${c.req.path}`,
             status_code: c.res.status,

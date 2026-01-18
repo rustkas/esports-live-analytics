@@ -37,6 +37,7 @@ export interface AuditEntry {
     timestamp: string;
     client_id: string;
     action: string;
+    method: string;
     resource: string;
     ip_address: string;
     user_agent?: string;
