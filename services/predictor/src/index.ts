@@ -152,7 +152,7 @@ async function main() {
 
             // Calculate prediction
             const predictStart = performance.now();
-            const prediction = model.predict(
+            const prediction = await model.predict(
                 state,
                 body.trigger_event_id,
                 body.trigger_event_type

@@ -109,49 +109,45 @@ export interface PredictRequest {
 // Match State (for prediction input)
 // ============================================
 
+export interface TeamState {
+    id: string;
+    name: string;
+    score: number;
+    maps_won: number;
+    money: number;
+    equipment_value: number;
+    consecutive_round_losses: number;
+    timeouts_remaining: number;
+
+    // Live Round State
+    side: 'CT' | 'T';
+    alive_count: number;
+
+    // Feature Priors (hardcoded or fetched)
+    strength_rating: number;
+}
+
+
 export interface MatchState {
     match_id: string;
     map_id: string;
+    format: 'bo1' | 'bo3' | 'bo5';
 
-    team_a_id: string;
-    team_b_id: string;
+    team_a: TeamState;
+    team_b: TeamState;
 
-    // Score
-    team_a_score: number;
-    team_b_score: number;
-    current_round: number;
+    round_no: number;
+    phase: 'warmup' | 'live' | 'freezetime' | 'bomb_planted' | 'ended' | 'timeout'; // normalized
 
-    // Current round state
-    round_phase: 'warmup' | 'freeze' | 'live' | 'over';
-    team_a_alive: number;
-    team_b_alive: number;
-
-    // Economy
-    team_a_econ: number;
-    team_b_econ: number;
-
-    // Sides
-    team_a_side: 'CT' | 'T';
-
-    // Metrics
-    team_a_kills_round: number;
-    team_b_kills_round: number;
-    team_a_kills_total: number;
-    team_b_kills_total: number;
-
-    // Bomb state
     bomb_planted: boolean;
-    bomb_site?: 'A' | 'B';
+    seconds_remaining: number;
 
-    // Updates
-    last_event_id: string;
-    last_event_at: string;
+    // Internal
+    last_event_id?: string;
+    last_event_at?: string;
 
-    // History
-    round_history: RoundResult[];
-
-    // Versioning (monotonic)
     state_version: number;
+    last_update_ts: number;
 }
 
 export interface RoundResult {
