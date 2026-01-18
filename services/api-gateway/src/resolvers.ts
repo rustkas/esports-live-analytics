@@ -41,7 +41,7 @@ export function createResolvers(ctx: ResolverContext) {
 
             async matches(
                 _: unknown,
-                { status, limit = 20, offset = 0 }: { status?: string; limit?: number; offset?: number }
+                { status, limit = 20, offset = 0, after }: { status?: string; limit?: number; offset?: number; after?: string }
             ) {
                 let query = 'SELECT * FROM matches';
                 const params: unknown[] = [];
@@ -60,20 +60,39 @@ export function createResolvers(ctx: ResolverContext) {
                     status ? [status.toLowerCase()] : []
                 );
 
-                params.push(limit);
+                // Handle cursor
+                let effectiveOffset = offset;
+                if (after) {
+                    try {
+                        const str = Buffer.from(after, 'base64').toString('ascii');
+                        const lastOffset = parseInt(str, 10);
+                        if (!isNaN(lastOffset)) effectiveOffset = lastOffset + 1;
+                    } catch (e) {
+                        // ignore invalid cursor
+                    }
+                }
+
+                params.push(Math.min(limit, 100));
                 query += ` LIMIT $${params.length}`;
 
-                params.push(offset);
+                params.push(effectiveOffset);
                 query += ` OFFSET $${params.length}`;
 
                 const result = await db.query<DbMatch>(query, params);
 
                 const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+                const edges = result.rows.map((row, index) => ({
+                    cursor: Buffer.from(String(effectiveOffset + index)).toString('base64'),
+                    node: row,
+                }));
 
                 return {
-                    items: result.rows,
-                    total,
-                    hasMore: offset + result.rows.length < total,
+                    edges,
+                    pageInfo: {
+                        hasNextPage: effectiveOffset + result.rows.length < total,
+                        endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null,
+                    },
+                    totalCount: total,
                 };
             },
 

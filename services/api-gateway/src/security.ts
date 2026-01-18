@@ -64,55 +64,85 @@ export function createSecurityService(redis: Redis, db: Pool) {
     });
 
     // Client Loader
-    const getClientByKey = async (apiKey: string): Promise<ApiClient | null> => {
+    const getClientByKey = async (rawApiKey: string): Promise<ApiClient | null> => {
         // Check cache first
-        const cacheKey = `security:client:${apiKey}`;
+        const cacheKey = `security:client:${rawApiKey}`;
         const cached = await redis.get(cacheKey);
 
         if (cached) {
             return JSON.parse(cached) as ApiClient;
         }
 
-        // Hash lookup in DB would be ideal if we store hashes, 
-        // but validateApiKey helper assumes we have hash in DB.
-        // Since we don't have a way to lookup by hash without scanning (unless we use hash as index),
-        // we typically lookup by API Key ID or having a separate "lookup key" part of the API key.
-        // For this implementation, we assume we can query by api_key directly (in insecure way) OR 
-        // we iterate or better: store apiKey -> client mapping in Redis for fast lookup.
+        // Parse Key: prefix.secret
+        const parts = rawApiKey.split('.');
+        // Support legacy plain keys for transition if needed, but per request we strict
+        if (parts.length !== 2) {
+            // Fallback to legacy check if legacy_api_key exists in api_clients
+            // For now, fail invalid format
+            return null;
+        }
+        const [prefix, secret] = parts;
 
-        // Simplification for prototype: query by api_key (assuming plain text in DB as per init.sql)
-        // In real prod, we'd use hash lookup.
-
-        const result = await db.query(
-            `SELECT 
-        id as client_id, 
-        name as client_name, 
-        api_key, 
-        rate_limit_per_minute as rate_limit_per_min,
-        scopes as permissions,
-        webhook_url,
-        is_active,
-        created_at
-       FROM api_clients 
-       WHERE api_key = $1 AND is_active = true`,
-            [apiKey]
+        // 1. Lookup Key by Prefix
+        const keyResult = await db.query(
+            `SELECT client_id, key_hash, scopes FROM api_keys WHERE key_prefix = $1 AND is_active = true`,
+            [prefix]
         );
 
-        if (result.rows.length === 0) return null;
+        if (keyResult.rows.length === 0) return null;
+        const keyRow = keyResult.rows[0];
 
-        const row = result.rows[0];
+        // 2. Verify Hash (SHA-256)
+        // Note: In prod, use scrypt/argon2, but SHA256 is fast for API keys if high entropy
+        const crypto = await import('node:crypto');
+        const hash = crypto.createHash('sha256').update(secret).digest('hex');
+
+        if (hash !== keyRow.key_hash) return null;
+
+        // 3. Update Last Used (Async - fire and forget)
+        db.query('UPDATE api_keys SET last_used_at = NOW() WHERE key_prefix = $1', [prefix]).catch(err =>
+            logger.error('Failed to update key usage', { error: String(err) })
+        );
+
+        // 4. Get Client Details
+        const clientResult = await db.query(
+            `SELECT 
+                id as client_id, 
+                name as client_name, 
+                rate_limit_per_minute as rate_limit_per_min,
+                quota_limit_monthly,
+                quota_used_monthly,
+                webhook_url,
+                is_active,
+                created_at
+            FROM api_clients 
+            WHERE id = $1 AND is_active = true`,
+            [keyRow.client_id]
+        );
+
+        if (clientResult.rows.length === 0) return null;
+        const clientRow = clientResult.rows[0];
+
+        // 5. Check Quota
+        if (clientRow.quota_limit_monthly > 0 && clientRow.quota_used_monthly >= clientRow.quota_limit_monthly) {
+            logger.warn('Quota exceeded', { client_id: clientRow.client_id });
+            return null; // Handle as 403 in middleware/return specific indicator
+        }
+        // Increment quota usage in background or Redis
+        // Here we just check limit. Incrementing usually implies Redis counter flushed to DB.
+
         const client: ApiClient = {
-            client_id: row.client_id,
-            client_name: row.client_name,
-            api_key_hash: '', // Not needed for this flow if querying directly
-            rate_limit_per_min: row.rate_limit_per_min,
-            permissions: row.permissions,
-            webhook_url: row.webhook_url,
+            client_id: clientRow.client_id,
+            client_name: clientRow.client_name,
+            api_key_hash: keyRow.key_hash,
+            rate_limit_per_min: clientRow.rate_limit_per_min,
+            permissions: keyRow.scopes || [],
+            webhook_url: clientRow.webhook_url,
             is_active: true,
-            created_at: row.created_at,
+            created_at: clientRow.created_at,
         };
 
-        // Cache for 1 minute
+        // Cache for 60s
         await redis.set(cacheKey, JSON.stringify(client), 'EX', 60);
 
         return client;

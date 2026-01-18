@@ -168,7 +168,7 @@ async function main() {
     // =====================================
 
     const restRoutes = createRestRoutes(db, redis);
-    app.route('/api', restRoutes);
+    app.route('/api/v1', restRoutes);
 
     // =====================================
     // GraphQL

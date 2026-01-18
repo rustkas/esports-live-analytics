@@ -215,5 +215,111 @@ export function createRestRoutes(db: Pool, redis: Redis): Hono {
         });
     });
 
+    // List list matches
+    app.get('/live-matches', async (c: Context) => {
+        const result = await db.query<DbMatch>(
+            "SELECT * FROM matches WHERE status = 'live' ORDER BY started_at DESC"
+        );
+        return c.json({ success: true, data: result.rows });
+    });
+
+    // Get match timeline
+    app.get('/matches/:id/timeline', async (c: Context) => {
+        const id = c.req.param('id');
+        try {
+            const url = `${config.services.analytics}/matches/${id}/timeline`;
+            const result = await fetchService(url);
+            return c.json(result);
+        } catch (error) {
+            logger.error('Timeline error', { error: String(error), matchId: id });
+            return c.json({ success: false, error: 'Failed to get timeline' }, 500);
+        }
+    });
+
+    // Get match rounds
+    app.get('/matches/:id/rounds', async (c: Context) => {
+        const id = c.req.param('id');
+        try {
+            const url = `${config.services.analytics}/matches/${id}/rounds`;
+            const result = await fetchService(url);
+            return c.json(result);
+        } catch (error) {
+            logger.error('Rounds error', { error: String(error), matchId: id });
+            return c.json({ success: false, error: 'Failed to get rounds' }, 500);
+        }
+    });
+
+    // Get prediction latest
+    app.get('/matches/:id/prediction/latest', async (c: Context) => {
+        const id = c.req.param('id');
+        try {
+            const cached = await redis.get(REDIS_KEYS.latestPrediction(id));
+            if (cached) {
+                return c.json({ success: true, data: JSON.parse(cached), cached: true });
+            }
+            const result = await fetchService(
+                `${config.services.predictor}/prediction/${id}`
+            ) as { success: boolean; prediction?: unknown };
+            return c.json({ success: result.success, data: result.prediction });
+        } catch (error) {
+            logger.warn('Prediction latest error', { error: String(error), matchId: id });
+            return c.json({ success: false, error: 'Failed to get prediction' }, 500);
+        }
+    });
+
+    // Get prediction history
+    app.get('/matches/:id/prediction/history', async (c: Context) => {
+        const id = c.req.param('id');
+        const limit = c.req.query('limit') || '50';
+        try {
+            const result = await fetchService(
+                `${config.services.predictor}/prediction/${id}/history?limit=${limit}`
+            );
+            return c.json(result);
+        } catch (error) {
+            logger.error('Prediction history error', { error: String(error), matchId: id });
+            return c.json({ success: false, error: 'Failed to get prediction history' }, 500);
+        }
+    });
+
+    // Get team stats (Last N)
+    app.get('/teams/:id/stats', async (c: Context) => {
+        const id = c.req.param('id');
+        const limit = parseInt(c.req.query('limit') ?? '10', 10);
+
+        const matchesResult = await db.query<DbMatch>(
+            `SELECT * FROM matches 
+             WHERE (team_a_id = $1 OR team_b_id = $1) AND status = 'finished'
+             ORDER BY finished_at DESC LIMIT $2`,
+            [id, Math.min(limit, 50)]
+        );
+
+        const wins = matchesResult.rows.filter((m: DbMatch) => m.winner_id === id).length;
+        const total = matchesResult.rows.length;
+
+        const teamRes = await db.query<DbTeam>('SELECT * FROM teams WHERE id = $1', [id]);
+        if (teamRes.rows.length === 0) return c.json({ error: 'Team not found' }, 404);
+
+        return c.json({
+            success: true,
+            data: {
+                team: teamRes.rows[0],
+                stats: {
+                    matches_played: total,
+                    wins,
+                    losses: total - wins,
+                    win_rate: total > 0 ? wins / total : 0,
+                },
+                matches: matchesResult.rows.map(m => ({
+                    id: m.id,
+                    opponent_id: m.team_a_id === id ? m.team_b_id : m.team_a_id,
+                    winner_id: m.winner_id,
+                    score: `${m.team_a_maps_won}-${m.team_b_maps_won}`,
+                    date: m.finished_at
+                }))
+            }
+        });
+    });
+
     return app;
 }

@@ -8,7 +8,12 @@ export const typeDefs = /* GraphQL */ `
     match(id: ID!): Match
     
     """List matches with optional filters"""
-    matches(status: MatchStatus, limit: Int, offset: Int): MatchConnection!
+    matches(
+      status: MatchStatus, 
+      limit: Int, 
+      offset: Int @deprecated(reason: "Use 'after' for cursor pagination"), 
+      after: String
+    ): MatchConnection!
     
     """Get a team by ID"""
     team(id: ID!): Team
@@ -149,9 +154,19 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type MatchConnection {
-    items: [Match!]!
-    total: Int!
-    hasMore: Boolean!
+    edges: [MatchEdge!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
+  }
+
+  type MatchEdge {
+    cursor: String!
+    node: Match!
+  }
+
+  type PageInfo {
+    hasNextPage: Boolean!
+    endCursor: String
   }
 
   enum MatchStatus {
