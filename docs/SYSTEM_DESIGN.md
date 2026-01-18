@@ -119,3 +119,29 @@ To ensure state consistency in a distributed environment, we implement a strict 
     -   Match State has `state_version` (incremented on update).
     -   Predictions include `state_version`.
     -   Clients can filter stale updates based on version.
+
+### 10. Database Indexing Strategy
+
+#### PostgreSQL Analysis
+We target the top 5 query patterns:
+
+1.  **Match Detail Fetch** (`SELECT * FROM matches WHERE id = ?`)
+    -   **Index**: `PK (id)` covers this. Cost ~1.
+2.  **Live Matches List** (`SELECT * FROM matches WHERE status = 'live'`)
+    -   **Index**: `idx_matches_live (status) WHERE status='live'`.
+    -   **Rationale**: Partial index is extremely small and fast for the hot path.
+3.  **Schedule Range** (`SELECT * FROM matches WHERE scheduled_at BETWEEN ? AND ?`)
+    -   **Index**: `idx_matches_scheduled (scheduled_at)`.
+    -   **Rationale**: B-Tree handles range scans efficiently.
+4.  **Team Matches** (`SELECT * FROM matches WHERE team_a_id = ? OR team_b_id = ?`)
+    -   **Index**: `idx_matches_teams (team_a_id, team_b_id)`.
+5.  **Audit Logs** (`SELECT * FROM api_audit_log WHERE client_id = ? ORDER BY created_at DESC`)
+    -   **Index**: `idx_audit_client` and `idx_audit_time`.
+
+#### ClickHouse Analysis
+1.  **Range Queries**: `ORDER BY (match_id, map_id, round_no, ts_event)`.
+    -   Optimized for fetching specific round events.
+2.  **Deduplication**: `Engine = ReplacingMergeTree(version)`.
+    -   Background merges handle upserts.
+3.  **Bloom Filter**: `INDEX idx_event_id TYPE tokenbf_v1`.
+    -   Optimization for looking up specific event existence in huge datasets.

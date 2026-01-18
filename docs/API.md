@@ -280,3 +280,23 @@ GET /metrics
 ```
 
 Available on all services. Returns Prometheus format.
+
+---
+
+## API Versioning & Contracts
+
+### Versioning Strategy
+- **REST API**: URI Versioning (v1). Current default: `/api/v1`.
+- **GraphQL**: Schema Evolution (non-breaking changes only).
+- **Event Contracts**: `RawEvent` schema versions managed via strict validation.
+
+### Breaking Changes Response
+If a breaking change is detected in event payload:
+1. `provider_ingestion_errors` will log `SCHEMA_MISMATCH`.
+2. Old consumers will continue to process valid fields (robustness principle).
+
+### Headers
+Client MUST send:
+- `Authorization: Bearer <token>`
+- `X-Client-ID: <uuid>` (If not using Bearer)
+- `X-Client-Version: <semver>` (Optional, for debugging)
