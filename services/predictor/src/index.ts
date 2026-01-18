@@ -150,12 +150,16 @@ async function main() {
                 trigger_type: body.trigger_event_type ?? 'manual',
             };
 
+            // Fetch last prediction for safe guards (circuit breaker / swing check)
+            const lastPrediction = await storage.getLatest(state.match_id);
+
             // Calculate prediction
             const predictStart = performance.now();
             const prediction = await model.predict(
                 state,
                 body.trigger_event_id,
-                body.trigger_event_type
+                body.trigger_event_type,
+                lastPrediction
             );
             const predictLatency = performance.now() - predictStart;
 
