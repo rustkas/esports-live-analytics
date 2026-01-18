@@ -1,0 +1,19 @@
+{
+    "name": "@esports/broadcaster",
+    "version": "1.0.0",
+    "main": "src/index.ts",
+    "scripts": {
+        "start": "bun run src/index.ts",
+        "dev": "bun run --watch src/index.ts"
+    },
+    "dependencies": {
+        "@esports/shared": "workspace:*",
+        "hono": "^3.12.0",
+        "ioredis": "^5.3.2",
+        "ws": "^8.16.0"
+    },
+    "devDependencies": {
+        "@types/ws": "^8.5.10",
+        "bun-types": "latest"
+    }
+}

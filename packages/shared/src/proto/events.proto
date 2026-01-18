@@ -1,0 +1,27 @@
+syntax = "proto3";
+package esports;
+
+message Event {
+  string event_id = 1;
+  string match_id = 2;
+  string map_id = 3;
+  string ts_event = 4;
+  string type = 5;
+  uint64 seq_no = 6;
+  string source = 7;
+  string trace_id = 8;
+  
+  // Using string for flexible payload initially
+  // In future: oneof payload { Kill kill = 10; ... }
+  string payload_json = 9;
+}
+
+message BatchEvents {
+  repeated Event events = 1;
+}
+
+message IngestionResponse {
+  bool success = 1;
+  string error = 2;
+  repeated string duplicate_ids = 3;
+}

@@ -168,6 +168,14 @@ async function main() {
 
             const body = await c.req.json();
 
+            // Clock Skew Check
+            const now = Date.now();
+            const tsEvent = new Date(body.ts_event).getTime();
+            if (isNaN(tsEvent) || Math.abs(now - tsEvent) > 30000) { // 30s tolerance
+                metrics.errors.inc({ type: 'clock_skew' });
+                return c.json({ error: { code: 'CLOCK_SKEW', message: 'Event timestamp out of bounds' } }, 400);
+            }
+
             // Add trace_id if not present
             const eventWithTrace = ensureTraceId(body);
 
