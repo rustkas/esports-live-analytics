@@ -1,0 +1,371 @@
+{
+    "annotations": {
+        "list": []
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 0,
+    "id": null,
+    "links": [],
+    "liveNow": false,
+    "panels": [
+        {
+            "title": "SLO Status: p95 < 500ms",
+            "type": "stat",
+            "gridPos": {
+                "x": 0,
+                "y": 0,
+                "w": 6,
+                "h": 4
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [
+                        {
+                            "type": "range",
+                            "options": {
+                                "from": 99,
+                                "to": 100,
+                                "result": {
+                                    "text": "✅ HEALTHY",
+                                    "color": "green"
+                                }
+                            }
+                        },
+                        {
+                            "type": "range",
+                            "options": {
+                                "from": 95,
+                                "to": 99,
+                                "result": {
+                                    "text": "⚠️ AT RISK",
+                                    "color": "yellow"
+                                }
+                            }
+                        },
+                        {
+                            "type": "range",
+                            "options": {
+                                "from": 0,
+                                "to": 95,
+                                "result": {
+                                    "text": "❌ BREACHED",
+                                    "color": "red"
+                                }
+                            }
+                        }
+                    ],
+                    "unit": "percent",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 95
+                            },
+                            {
+                                "color": "green",
+                                "value": 99
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "100 - (rate(e2e_latency_slo_violations_total[5m]) / rate(e2e_requests_total[5m]) * 100)",
+                    "legendFormat": "SLO Compliance"
+                }
+            ]
+        },
+        {
+            "title": "E2E Latency (p50 / p95 / p99)",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 6,
+                "y": 0,
+                "w": 12,
+                "h": 8
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ms"
+                }
+            },
+            "options": {
+                "legend": {
+                    "displayMode": "table",
+                    "placement": "right"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.50, rate(e2e_latency_ms_bucket[1m]))",
+                    "legendFormat": "p50"
+                },
+                {
+                    "expr": "histogram_quantile(0.95, rate(e2e_latency_ms_bucket[1m]))",
+                    "legendFormat": "p95"
+                },
+                {
+                    "expr": "histogram_quantile(0.99, rate(e2e_latency_ms_bucket[1m]))",
+                    "legendFormat": "p99"
+                }
+            ]
+        },
+        {
+            "title": "Events/sec",
+            "type": "stat",
+            "gridPos": {
+                "x": 18,
+                "y": 0,
+                "w": 6,
+                "h": 4
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ops",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "yellow",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 100
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(ingestion_events_processed_total[1m]))",
+                    "legendFormat": "Events/sec"
+                }
+            ]
+        },
+        {
+            "title": "Error Rate",
+            "type": "stat",
+            "gridPos": {
+                "x": 18,
+                "y": 4,
+                "w": 6,
+                "h": 4
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 0.1
+                            },
+                            {
+                                "color": "red",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(ingestion_errors_total[5m])) / sum(rate(ingestion_events_received_total[5m])) * 100",
+                    "legendFormat": "Error %"
+                }
+            ]
+        },
+        {
+            "title": "Stage Latency Breakdown",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 0,
+                "y": 8,
+                "w": 12,
+                "h": 8
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ms",
+                    "custom": {
+                        "stacking": {
+                            "mode": "normal"
+                        }
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.95, rate(stage_latency_ms_bucket{stage=\"ingest\"}[1m]))",
+                    "legendFormat": "Ingest"
+                },
+                {
+                    "expr": "histogram_quantile(0.95, rate(stage_latency_ms_bucket{stage=\"queue\"}[1m]))",
+                    "legendFormat": "Queue"
+                },
+                {
+                    "expr": "histogram_quantile(0.95, rate(stage_latency_ms_bucket{stage=\"state\"}[1m]))",
+                    "legendFormat": "State Update"
+                },
+                {
+                    "expr": "histogram_quantile(0.95, rate(stage_latency_ms_bucket{stage=\"predict\"}[1m]))",
+                    "legendFormat": "Predict"
+                }
+            ]
+        },
+        {
+            "title": "Queue Depth",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 12,
+                "y": 8,
+                "w": 12,
+                "h": 8
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "ingestion_queue_depth",
+                    "legendFormat": "Queue Depth"
+                },
+                {
+                    "expr": "stream_pending_messages",
+                    "legendFormat": "Pending (unacked)"
+                }
+            ]
+        },
+        {
+            "title": "ClickHouse Insert Latency",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 0,
+                "y": 16,
+                "w": 8,
+                "h": 6
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ms"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.95, rate(clickhouse_insert_latency_ms_bucket[1m]))",
+                    "legendFormat": "p95 Insert Latency"
+                }
+            ]
+        },
+        {
+            "title": "Predictions/min",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 8,
+                "y": 16,
+                "w": 8,
+                "h": 6
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(predictor_predictions_total[1m])) * 60",
+                    "legendFormat": "Predictions/min"
+                }
+            ]
+        },
+        {
+            "title": "API Rate Limits",
+            "type": "timeseries",
+            "gridPos": {
+                "x": 16,
+                "y": 16,
+                "w": 8,
+                "h": 6
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(api_gateway_rate_limited_total[5m])) by (client_id)",
+                    "legendFormat": "Rate Limited: {{client_id}}"
+                }
+            ]
+        }
+    ],
+    "refresh": "5s",
+    "schemaVersion": 38,
+    "style": "dark",
+    "tags": [
+        "cs2",
+        "analytics",
+        "slo"
+    ],
+    "templating": {
+        "list": []
+    },
+    "time": {
+        "from": "now-1h",
+        "to": "now"
+    },
+    "timepicker": {},
+    "timezone": "browser",
+    "title": "CS2 Analytics - SLO Dashboard",
+    "uid": "cs2-slo",
+    "version": 1,
+    "weekStart": ""
+}

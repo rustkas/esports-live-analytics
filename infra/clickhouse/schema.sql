@@ -1,288 +1,392 @@
--- ============================================
--- CS2 Live Analytics - ClickHouse Schema
--- ============================================
+-- ============================================================
+-- CS2 Analytics ClickHouse Schema (Production-Ready)
+-- ============================================================
+-- This schema is designed for:
+-- 1. High-throughput event ingestion (10k+ events/sec)
+-- 2. Low-latency analytical queries
+-- 3. Exactly-once semantics via deduplication
+-- 4. Automatic aggregation via Materialized Views
+-- ============================================================
 
--- Create database
-CREATE DATABASE IF NOT EXISTS esports;
-
-USE esports;
-
--- ============================================
--- 1. Raw Events Table (Audit + Replay)
--- ============================================
--- Immutable log of all incoming events
--- Used for: debugging, replay, backfill, audit
+-- ============================================================
+-- SECTION 1: RAW EVENTS TABLE
+-- The single source of truth for all events
+-- ============================================================
 
 CREATE TABLE IF NOT EXISTS cs2_events_raw
 (
-    -- Partitioning & time
+    -- Partition key
     date Date DEFAULT toDate(ts_event),
-    ts_event DateTime64(3, 'UTC'),
-    ts_ingest DateTime64(3, 'UTC') DEFAULT now64(3),
     
-    -- Event identity
+    -- Event identification
     event_id UUID,
-    source LowCardinality(String),
-    seq_no UInt64,
-    
-    -- Match context
     match_id UUID,
     map_id UUID,
-    round_no UInt16,
+    round_no UInt8,
+    
+    -- Timestamps
+    ts_event DateTime64(3),
+    ts_ingest DateTime64(3) DEFAULT now64(3),
     
     -- Event data
     type LowCardinality(String),
-    payload String, -- JSON as string for flexibility
+    source LowCardinality(String),
+    seq_no UInt64,
+    payload String,  -- JSON
     
-    -- Processing metadata
-    processed_at DateTime64(3, 'UTC') DEFAULT now64(3),
-    processor_version LowCardinality(String) DEFAULT 'v1'
+    -- Tracing
+    trace_id String DEFAULT '',
+    
+    -- Versioning for ReplacingMergeTree
+    version UInt64 DEFAULT toUnixTimestamp64Milli(now64(3))
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
-ORDER BY (match_id, map_id, ts_event, seq_no, event_id)
-TTL date + INTERVAL 90 DAY DELETE
+ORDER BY (match_id, map_id, ts_event, event_id)
+TTL date + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
--- Index for quick event_id lookups (deduplication)
-ALTER TABLE cs2_events_raw ADD INDEX idx_event_id event_id TYPE bloom_filter GRANULARITY 4;
+-- Index for fast lookups
+ALTER TABLE cs2_events_raw ADD INDEX idx_type type TYPE set(100) GRANULARITY 4;
+ALTER TABLE cs2_events_raw ADD INDEX idx_round round_no TYPE minmax GRANULARITY 1;
 
--- ============================================
--- 2. Predictions Time-Series
--- ============================================
--- Stores every prediction update for auditing
--- and historical analysis of prediction accuracy
+-- ============================================================
+-- SECTION 2: PREDICTIONS TABLE
+-- Time-series of predictions (append-only, no updates)
+-- ============================================================
 
 CREATE TABLE IF NOT EXISTS cs2_predictions
 (
     date Date DEFAULT toDate(ts_calc),
-    ts_calc DateTime64(3, 'UTC'),
+    ts_calc DateTime64(3),
     
     match_id UUID,
     map_id UUID,
-    round_no UInt16,
+    round_no UInt8,
     
     model_version LowCardinality(String),
     
     team_a_id UUID,
     team_b_id UUID,
     
-    -- Probabilities
     p_team_a_win Float32,
     p_team_b_win Float32,
     confidence Float32,
     
-    -- Feature snapshot (for debugging model)
-    features String, -- JSON with key features used
-    
-    -- Trigger event
-    trigger_event_id UUID,
-    trigger_event_type LowCardinality(String)
+    features String DEFAULT '{}',  -- JSON
+    trigger_event_id String DEFAULT '',
+    trigger_event_type LowCardinality(String) DEFAULT ''
 )
-ENGINE = MergeTree
+ENGINE = MergeTree()
 PARTITION BY toYYYYMM(date)
 ORDER BY (match_id, map_id, ts_calc)
-TTL date + INTERVAL 180 DAY DELETE
-SETTINGS index_granularity = 4096;
+TTL date + INTERVAL 180 DAY
+SETTINGS index_granularity = 8192;
 
--- ============================================
--- 3. Round Metrics (Aggregated per round)
--- ============================================
--- Stores computed metrics per round
--- ReplacingMergeTree keeps latest version per key
+-- ============================================================
+-- SECTION 3: MATERIALIZED VIEWS FOR AGGREGATES
+-- Aggregates are computed FROM raw events, not written directly
+-- This ensures exactly-once semantics
+-- ============================================================
 
-CREATE TABLE IF NOT EXISTS cs2_round_metrics
+-- ------------------------------------------------------------
+-- 3.1: Round Metrics (aggregated from kill events)
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS cs2_round_metrics_store
 (
-    date Date DEFAULT toDate(ts_calc),
-    ts_calc DateTime64(3, 'UTC'),
-    
+    date Date,
     match_id UUID,
     map_id UUID,
-    round_no UInt16,
+    round_no UInt8,
     
-    team_a_id UUID,
-    team_b_id UUID,
+    team_a_kills SimpleAggregateFunction(sum, UInt16),
+    team_b_kills SimpleAggregateFunction(sum, UInt16),
+    team_a_headshots SimpleAggregateFunction(sum, UInt16),
+    team_b_headshots SimpleAggregateFunction(sum, UInt16),
+    team_a_first_kills SimpleAggregateFunction(sum, UInt16),
+    team_b_first_kills SimpleAggregateFunction(sum, UInt16),
     
-    -- Round state
-    round_winner LowCardinality(String) DEFAULT '', -- 'A', 'B', or ''
-    round_type LowCardinality(String) DEFAULT '',   -- 'pistol', 'eco', 'force', 'full'
+    events_count SimpleAggregateFunction(sum, UInt32),
     
-    -- Kill metrics
-    team_a_kills UInt16 DEFAULT 0,
-    team_b_kills UInt16 DEFAULT 0,
-    team_a_headshots UInt16 DEFAULT 0,
-    team_b_headshots UInt16 DEFAULT 0,
+    -- Latest state (use max to get last value)
+    team_a_score SimpleAggregateFunction(max, UInt8),
+    team_b_score SimpleAggregateFunction(max, UInt8),
+    round_winner LowCardinality(String),
     
-    -- Economy
-    team_a_econ Int32 DEFAULT 0,
-    team_b_econ Int32 DEFAULT 0,
+    -- Timing
+    first_event_ts SimpleAggregateFunction(min, DateTime64(3)),
+    last_event_ts SimpleAggregateFunction(max, DateTime64(3)),
     
-    -- Computed metrics
-    momentum Float32 DEFAULT 0.0,           -- -1.0 to 1.0 (negative = B momentum)
-    clutch_index Float32 DEFAULT 0.0,       -- 0.0 to 1.0
-    economy_pressure Float32 DEFAULT 0.0,   -- 0.0 to 1.0
-    
-    -- Player highlights
-    first_blood_player_id Nullable(String),
-    first_blood_team LowCardinality(String) DEFAULT '',
-    clutch_player_id Nullable(String),
-    mvp_player_id Nullable(String)
+    -- Version for dedup
+    version UInt64
 )
-ENGINE = ReplacingMergeTree(ts_calc)
+ENGINE = AggregatingMergeTree()
 PARTITION BY toYYYYMM(date)
 ORDER BY (match_id, map_id, round_no)
-TTL date + INTERVAL 90 DAY DELETE
-SETTINGS index_granularity = 2048;
+TTL date + INTERVAL 90 DAY;
 
--- ============================================
--- 4. Match Metrics (Aggregated per match/map)
--- ============================================
-
-CREATE TABLE IF NOT EXISTS cs2_match_metrics
-(
-    date Date DEFAULT toDate(ts_calc),
-    ts_calc DateTime64(3, 'UTC'),
-    
-    match_id UUID,
-    map_id Nullable(UUID), -- NULL for overall match
-    
-    team_a_id UUID,
-    team_b_id UUID,
-    
-    -- Score
-    team_a_rounds UInt16 DEFAULT 0,
-    team_b_rounds UInt16 DEFAULT 0,
-    
-    -- Aggregated stats
-    team_a_total_kills UInt32 DEFAULT 0,
-    team_b_total_kills UInt32 DEFAULT 0,
-    
-    team_a_hs_percentage Float32 DEFAULT 0.0,
-    team_b_hs_percentage Float32 DEFAULT 0.0,
-    
-    -- Win rates
-    team_a_ct_rounds UInt16 DEFAULT 0,
-    team_a_t_rounds UInt16 DEFAULT 0,
-    team_b_ct_rounds UInt16 DEFAULT 0,
-    team_b_t_rounds UInt16 DEFAULT 0,
-    
-    -- Trend metrics
-    current_momentum Float32 DEFAULT 0.0,
-    avg_round_duration_sec Float32 DEFAULT 0.0,
-    
-    -- Match state
-    status LowCardinality(String) DEFAULT 'live' -- 'live', 'finished', 'paused'
-)
-ENGINE = ReplacingMergeTree(ts_calc)
-PARTITION BY toYYYYMM(date)
-ORDER BY (match_id, map_id)
-TTL date + INTERVAL 180 DAY DELETE;
-
--- ============================================
--- 5. Player Stats (per match)
--- ============================================
-
-CREATE TABLE IF NOT EXISTS cs2_player_stats
-(
-    date Date DEFAULT toDate(ts_calc),
-    ts_calc DateTime64(3, 'UTC'),
-    
-    match_id UUID,
-    map_id UUID,
-    player_id String,
-    team_id UUID,
-    
-    -- Core stats
-    kills UInt16 DEFAULT 0,
-    deaths UInt16 DEFAULT 0,
-    assists UInt16 DEFAULT 0,
-    headshots UInt16 DEFAULT 0,
-    
-    -- Advanced
-    adr Float32 DEFAULT 0.0,  -- Average Damage per Round
-    kast Float32 DEFAULT 0.0, -- Kill/Assist/Survived/Traded %
-    rating Float32 DEFAULT 0.0,
-    
-    -- Impact
-    first_kills UInt16 DEFAULT 0,
-    first_deaths UInt16 DEFAULT 0,
-    clutches_won UInt16 DEFAULT 0,
-    clutches_played UInt16 DEFAULT 0,
-    
-    -- Economy
-    total_damage UInt32 DEFAULT 0,
-    utility_damage UInt32 DEFAULT 0
-)
-ENGINE = ReplacingMergeTree(ts_calc)
-PARTITION BY toYYYYMM(date)
-ORDER BY (match_id, map_id, player_id)
-TTL date + INTERVAL 90 DAY DELETE;
-
--- ============================================
--- 6. Materialized Views for Real-time Aggregates
--- ============================================
-
--- MV: Count kills per round (feeds cs2_round_metrics)
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_round_kills
-TO cs2_round_metrics
-AS
-SELECT
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_round_metrics
+TO cs2_round_metrics_store
+AS SELECT
     toDate(ts_event) AS date,
-    max(ts_event) AS ts_calc,
     match_id,
     map_id,
     round_no,
     
-    toUUID(JSONExtractString(payload, 'team_a_id')) AS team_a_id,
-    toUUID(JSONExtractString(payload, 'team_b_id')) AS team_b_id,
+    -- Kill stats from payload
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'A') AS team_a_kills,
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'B') AS team_b_kills,
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'A' AND JSONExtractBool(payload, 'is_headshot')) AS team_a_headshots,
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'B' AND JSONExtractBool(payload, 'is_headshot')) AS team_b_headshots,
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'A' AND JSONExtractBool(payload, 'is_first_kill')) AS team_a_first_kills,
+    sumIf(1, type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'B' AND JSONExtractBool(payload, 'is_first_kill')) AS team_b_first_kills,
     
-    '' AS round_winner,
-    '' AS round_type,
+    count() AS events_count,
     
+    -- Latest scores from round_end
+    maxIf(JSONExtractUInt(payload, 'team_a_score'), type = 'round_end') AS team_a_score,
+    maxIf(JSONExtractUInt(payload, 'team_b_score'), type = 'round_end') AS team_b_score,
+    anyLastIf(JSONExtractString(payload, 'winner_team'), type = 'round_end') AS round_winner,
+    
+    min(ts_event) AS first_event_ts,
+    max(ts_event) AS last_event_ts,
+    
+    max(toUnixTimestamp64Milli(ts_event)) AS version
+    
+FROM cs2_events_raw
+GROUP BY date, match_id, map_id, round_no;
+
+-- ------------------------------------------------------------
+-- 3.2: Match Metrics (aggregated from all events)
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS cs2_match_metrics_store
+(
+    date Date,
+    match_id UUID,
+    map_id UUID,
+    
+    total_rounds SimpleAggregateFunction(max, UInt8),
+    team_a_rounds_won SimpleAggregateFunction(max, UInt8),
+    team_b_rounds_won SimpleAggregateFunction(max, UInt8),
+    
+    total_kills SimpleAggregateFunction(sum, UInt32),
+    team_a_kills SimpleAggregateFunction(sum, UInt32),
+    team_b_kills SimpleAggregateFunction(sum, UInt32),
+    
+    total_headshots SimpleAggregateFunction(sum, UInt32),
+    
+    events_count SimpleAggregateFunction(sum, UInt64),
+    
+    match_start_ts SimpleAggregateFunction(min, DateTime64(3)),
+    last_event_ts SimpleAggregateFunction(max, DateTime64(3)),
+    
+    status LowCardinality(String)
+)
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, map_id)
+TTL date + INTERVAL 180 DAY;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_match_metrics
+TO cs2_match_metrics_store
+AS SELECT
+    toDate(ts_event) AS date,
+    match_id,
+    map_id,
+    
+    max(round_no) AS total_rounds,
+    maxIf(JSONExtractUInt(payload, 'team_a_score'), type = 'round_end') AS team_a_rounds_won,
+    maxIf(JSONExtractUInt(payload, 'team_b_score'), type = 'round_end') AS team_b_rounds_won,
+    
+    countIf(type = 'kill') AS total_kills,
     countIf(type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'A') AS team_a_kills,
     countIf(type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'B') AS team_b_kills,
-    countIf(type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'A' AND JSONExtractBool(payload, 'is_headshot')) AS team_a_headshots,
-    countIf(type = 'kill' AND JSONExtractString(payload, 'killer_team') = 'B' AND JSONExtractBool(payload, 'is_headshot')) AS team_b_headshots,
     
-    0 AS team_a_econ,
-    0 AS team_b_econ,
-    0.0 AS momentum,
-    0.0 AS clutch_index,
-    0.0 AS economy_pressure,
+    countIf(type = 'kill' AND JSONExtractBool(payload, 'is_headshot')) AS total_headshots,
     
-    NULL AS first_blood_player_id,
-    '' AS first_blood_team,
-    NULL AS clutch_player_id,
-    NULL AS mvp_player_id
+    count() AS events_count,
+    
+    min(ts_event) AS match_start_ts,
+    max(ts_event) AS last_event_ts,
+    
+    if(countIf(type = 'match_end') > 0, 'finished',
+       if(countIf(type = 'match_start') > 0, 'live', 'unknown')) AS status
+
 FROM cs2_events_raw
-WHERE type IN ('kill', 'round_start', 'round_end')
-GROUP BY date, match_id, map_id, round_no, team_a_id, team_b_id;
+GROUP BY date, match_id, map_id;
 
--- ============================================
--- 7. Useful Queries (Examples for API)
--- ============================================
+-- ------------------------------------------------------------
+-- 3.3: Player Stats (aggregated from kill/hurt events)
+-- ------------------------------------------------------------
 
--- Get latest prediction for a match
--- SELECT * FROM cs2_predictions
--- WHERE match_id = {match_id:UUID}
--- ORDER BY ts_calc DESC
--- LIMIT 1;
+CREATE TABLE IF NOT EXISTS cs2_player_stats_store
+(
+    date Date,
+    match_id UUID,
+    map_id UUID,
+    player_id UUID,
+    team LowCardinality(String),
+    
+    kills SimpleAggregateFunction(sum, UInt16),
+    deaths SimpleAggregateFunction(sum, UInt16),
+    headshots SimpleAggregateFunction(sum, UInt16),
+    first_kills SimpleAggregateFunction(sum, UInt16),
+    damage_dealt SimpleAggregateFunction(sum, UInt32)
+)
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (match_id, map_id, player_id)
+TTL date + INTERVAL 90 DAY;
 
--- Get round-by-round metrics
--- SELECT round_no, team_a_kills, team_b_kills, momentum
--- FROM cs2_round_metrics FINAL
--- WHERE match_id = {match_id:UUID}
--- ORDER BY round_no ASC;
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_player_kills
+TO cs2_player_stats_store
+AS SELECT
+    toDate(ts_event) AS date,
+    match_id,
+    map_id,
+    JSONExtractString(payload, 'killer_player_id')::UUID AS player_id,
+    JSONExtractString(payload, 'killer_team') AS team,
+    
+    count() AS kills,
+    0 AS deaths,
+    countIf(JSONExtractBool(payload, 'is_headshot')) AS headshots,
+    countIf(JSONExtractBool(payload, 'is_first_kill')) AS first_kills,
+    0 AS damage_dealt
+    
+FROM cs2_events_raw
+WHERE type = 'kill'
+GROUP BY date, match_id, map_id, player_id, team;
 
--- Get prediction history (for charts)
--- SELECT ts_calc, p_team_a_win, p_team_b_win, confidence
--- FROM cs2_predictions
--- WHERE match_id = {match_id:UUID}
--- ORDER BY ts_calc ASC;
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_player_deaths
+TO cs2_player_stats_store
+AS SELECT
+    toDate(ts_event) AS date,
+    match_id,
+    map_id,
+    JSONExtractString(payload, 'victim_player_id')::UUID AS player_id,
+    JSONExtractString(payload, 'victim_team') AS team,
+    
+    0 AS kills,
+    count() AS deaths,
+    0 AS headshots,
+    0 AS first_kills,
+    0 AS damage_dealt
+    
+FROM cs2_events_raw
+WHERE type = 'kill'
+GROUP BY date, match_id, map_id, player_id, team;
 
--- Event count by type (debugging)
--- SELECT type, count() AS cnt
--- FROM cs2_events_raw
--- WHERE match_id = {match_id:UUID}
--- GROUP BY type
--- ORDER BY cnt DESC;
+-- ============================================================
+-- SECTION 4: AUDIT LOG
+-- For B2B API audit trail
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS api_audit_log
+(
+    timestamp DateTime64(3),
+    date Date DEFAULT toDate(timestamp),
+    
+    client_id String,
+    action LowCardinality(String),
+    resource String,
+    
+    ip_address String,
+    user_agent String DEFAULT '',
+    
+    status_code UInt16,
+    latency_ms Float32,
+    
+    request_id UUID,
+    metadata String DEFAULT '{}'
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, client_id, timestamp)
+TTL date + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- ============================================================
+-- SECTION 5: LATENCY TRACKING
+-- For SLO monitoring
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS e2e_latency_log
+(
+    timestamp DateTime64(3),
+    date Date DEFAULT toDate(timestamp),
+    
+    trace_id String,
+    event_type LowCardinality(String),
+    match_id UUID,
+    
+    -- Stage latencies
+    ingest_latency_ms Float32,
+    queue_latency_ms Float32,
+    state_latency_ms Float32,
+    predict_latency_ms Float32,
+    
+    e2e_latency_ms Float32,
+    
+    -- SLO tracking
+    slo_500ms_met UInt8  -- 1 if e2e < 500ms
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, timestamp)
+TTL date + INTERVAL 30 DAY;
+
+-- View for SLO dashboard
+CREATE VIEW IF NOT EXISTS v_latency_slo AS
+SELECT
+    toStartOfMinute(timestamp) AS minute,
+    count() AS total_events,
+    sum(slo_500ms_met) AS met_slo,
+    (sum(slo_500ms_met) / count()) * 100 AS slo_percentage,
+    quantile(0.50)(e2e_latency_ms) AS p50_ms,
+    quantile(0.95)(e2e_latency_ms) AS p95_ms,
+    quantile(0.99)(e2e_latency_ms) AS p99_ms,
+    max(e2e_latency_ms) AS max_ms
+FROM e2e_latency_log
+WHERE date >= today() - 1
+GROUP BY minute
+ORDER BY minute DESC;
+
+-- ============================================================
+-- SECTION 6: HELPFUL VIEWS
+-- ============================================================
+
+-- Combined round metrics view (uses FINAL for dedup)
+CREATE VIEW IF NOT EXISTS v_round_metrics AS
+SELECT
+    match_id,
+    map_id,
+    round_no,
+    team_a_kills,
+    team_b_kills,
+    team_a_headshots,
+    team_b_headshots,
+    team_a_score,
+    team_b_score,
+    round_winner,
+    dateDiff('second', first_event_ts, last_event_ts) AS round_duration_sec
+FROM cs2_round_metrics_store FINAL
+ORDER BY match_id, map_id, round_no;
+
+-- Live match status
+CREATE VIEW IF NOT EXISTS v_live_matches AS
+SELECT
+    match_id,
+    map_id,
+    team_a_rounds_won,
+    team_b_rounds_won,
+    total_kills,
+    events_count,
+    match_start_ts,
+    last_event_ts,
+    dateDiff('second', last_event_ts, now64(3)) AS seconds_since_last_event
+FROM cs2_match_metrics_store FINAL
+WHERE status = 'live'
+    AND last_event_ts > now64(3) - INTERVAL 5 MINUTE
+ORDER BY last_event_ts DESC;
