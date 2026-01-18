@@ -14,6 +14,7 @@ const logger = createLogger('predictor:storage', config.logLevel as 'debug' | 'i
 export interface PredictionStorage {
     save(prediction: Prediction): Promise<void>;
     getLatest(matchId: string): Promise<Prediction | null>;
+    getHistory(matchId: string, limit: number): Promise<Prediction[]>;
     publish(prediction: Prediction): Promise<void>;
     close(): Promise<void>;
 }
@@ -25,6 +26,36 @@ export function createPredictionStorage(redis: Redis): PredictionStorage {
     });
 
     return {
+        async getHistory(matchId: string, limit: number): Promise<Prediction[]> {
+            try {
+                const result = await clickhouse.query({
+                    query: `
+                        SELECT *
+                        FROM cs2_predictions
+                        WHERE match_id = {matchId: UUID}
+                        ORDER BY ts_calc DESC
+                        LIMIT {limit: UInt32}
+                    `,
+                    query_params: {
+                        matchId: matchId,
+                        limit: limit
+                    },
+                    format: 'JSONEachRow'
+                });
+
+                const rows = await result.json<Array<Record<string, any>>>();
+                return rows.map((row) => ({
+                    ...row,
+                    features: row.features && typeof row.features === 'string'
+                        ? JSON.parse(row.features)
+                        : undefined
+                })) as unknown as Prediction[];
+            } catch (err) {
+                logger.error('Failed to get history', { error: String(err), matchId });
+                return [];
+            }
+        },
+
         async save(prediction: Prediction): Promise<void> {
             // Save to Redis (latest)
             const key = REDIS_KEYS.latestPrediction(prediction.match_id);
