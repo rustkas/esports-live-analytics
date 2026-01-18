@@ -30,13 +30,16 @@ export const typeDefs = /* GraphQL */ `
 
   type Subscription {
     """Subscribe to prediction updates for a match"""
-    predictionUpdated(matchId: ID!): PredictionUpdate!
+    predictionUpdated(matchId: ID, tournamentId: ID): PredictionUpdate!
     
     """Subscribe to score updates for a match"""
-    scoreUpdated(matchId: ID!): ScoreUpdate!
+    scoreUpdated(matchId: ID, tournamentId: ID): ScoreUpdate!
     
     """Subscribe to all match events"""
-    matchEvents(matchId: ID!): MatchEvent!
+    matchEvents(matchId: ID, tournamentId: ID): MatchEvent!
+    
+    """Subscribe to match lifecycle updates (start/end)"""
+    matchLifecycle(tournamentId: ID): Match! 
   }
 
   type Match {

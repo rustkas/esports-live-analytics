@@ -163,6 +163,18 @@ async function main() {
         return c.text(metrics.registry.getMetrics());
     });
 
+    // Public Status Page
+    app.get('/status', (c) => c.json({
+        status: 'operational',
+        version: SERVICE_VERSION,
+        timestamp: new Date().toISOString()
+    }));
+
+    // Start Webhook Service
+    const { createWebhookService } = await import('./webhooks');
+    const webhooks = createWebhookService(redis, db);
+    webhooks.start().catch(err => logger.error('Webhook start failed', { error: String(err) }));
+
     // =====================================
     // REST API
     // =====================================
