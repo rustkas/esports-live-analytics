@@ -9,6 +9,7 @@
  * 
  * Features:
  * - Request tracking with metrics
+ * - B2B Security (Auth, Rate Limit, Audit)
  * - Graceful shutdown
  */
 
@@ -27,6 +28,7 @@ import { createDatabase } from './database';
 import { typeDefs } from './schema';
 import { createResolvers } from './resolvers';
 import { createRestRoutes } from './rest';
+import { createSecurityService, createAuthMiddleware } from './security';
 
 const logger = createLogger('api-gateway', config.logLevel as 'debug' | 'info');
 const metrics = createProductionMetrics('api_gateway');
@@ -54,6 +56,9 @@ async function main() {
 
     await db.query('SELECT 1');
     logger.info('Connected to PostgreSQL');
+
+    // Initialize Security Service
+    const security = createSecurityService(redis, db);
 
     // Health checks
     const health = createHealthChecks(SERVICE_VERSION, [
@@ -119,6 +124,16 @@ async function main() {
         });
         metrics.requestLatency.observe(latency, { method: c.req.method, path });
     });
+
+    // =====================================
+    // Security Middleware
+    // =====================================
+
+    // Protect all API routes (except public/health)
+    app.use('/api/*', createAuthMiddleware(security));
+
+    // Protect GraphQL
+    // app.use('/graphql', createAuthMiddleware(security)); // Optional: disable for now if needed
 
     // =====================================
     // Health Endpoints
@@ -187,6 +202,7 @@ async function main() {
             'Health: /health, /healthz, /readyz',
             'Metrics: /metrics',
         ],
+        security: 'enabled',
     });
 
     // =====================================
@@ -200,6 +216,9 @@ async function main() {
         logger.info('Graceful shutdown started', { signal });
 
         server.stop();
+
+        // Flush audit logs
+        await security.auditLogger.flush();
 
         // Wait for in-flight requests
         await new Promise(resolve => setTimeout(resolve, 2000));

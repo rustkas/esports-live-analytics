@@ -5,9 +5,11 @@
  * Features:
  * - Event validation with schema versioning
  * - Payload size limits
- * - Deduplication
+ * - Deduplication (using bounded match sets)
  * - Redis Streams publishing
  * - Trace ID propagation
+ * - DLQ and Retry policy
+ * - Admin API for DLQ management
  * - Health checks (/healthz, /readyz, /health)
  * - Graceful shutdown
  */
@@ -21,11 +23,15 @@ import {
     createProductionMetrics,
     ensureTraceId,
     validateEvent,
+    createDedupService,
+    createDLQManager,
     PAYLOAD_LIMITS,
+    DEFAULT_DLQ_CONFIG,
+    DEFAULT_DEDUP_CONFIG,
 } from '@esports/shared';
 import { config } from './config';
 import { createStreamPublisher } from './stream';
-import { createDedupService } from './dedup';
+import { createAdminRoutes } from './admin';
 
 const logger = createLogger('ingestion', config.logLevel as 'debug' | 'info');
 const metrics = createProductionMetrics('ingestion');
@@ -63,7 +69,12 @@ async function main() {
     const stream = createStreamPublisher(redis);
     await stream.init();
 
-    const dedup = createDedupService(redis);
+    const dedup = createDedupService(redis, {
+        ...DEFAULT_DEDUP_CONFIG,
+        ttlSeconds: config.dedup.ttlSeconds,
+    });
+
+    const dlq = createDLQManager(redis, DEFAULT_DLQ_CONFIG);
 
     // Health checks
     const health = createHealthChecks(SERVICE_VERSION, [
@@ -96,7 +107,7 @@ async function main() {
         await next();
         const latency = performance.now() - start;
 
-        const path = c.req.path.split('/').slice(0, 2).join('/') || '/';
+        const path = c.req.path.split('/').slice(0, 3).join('/') || '/';
         metrics.requests.inc({
             method: c.req.method,
             path,
@@ -104,6 +115,13 @@ async function main() {
         });
         metrics.requestLatency.observe(latency, { method: c.req.method, path });
     });
+
+    // =====================================
+    // Admin Routes (mounted first)
+    // =====================================
+
+    const adminRoutes = createAdminRoutes(dlq);
+    app.route('/admin', adminRoutes);
 
     // =====================================
     // Health Endpoints
@@ -176,7 +194,7 @@ async function main() {
             };
 
             // Check for duplicates
-            if (await dedup.isDuplicate(event.event_id)) {
+            if (await dedup.isDuplicate(event.event_id, event.match_id)) {
                 logger.debug('Duplicate event', logContext);
                 return c.json({
                     success: true,
@@ -190,7 +208,7 @@ async function main() {
             const streamId = await stream.publish(event);
 
             // Mark as seen
-            await dedup.markSeen(event.event_id);
+            await dedup.markSeen(event.event_id, event.match_id);
 
             // Record metrics
             const ingestLatency = performance.now() - stageStart;
@@ -280,7 +298,7 @@ async function main() {
 
                 const event = validation.data;
 
-                if (await dedup.isDuplicate(event.event_id)) {
+                if (await dedup.isDuplicate(event.event_id, event.match_id)) {
                     duplicates++;
                     results.push({
                         event_id: event.event_id,
@@ -293,7 +311,7 @@ async function main() {
 
                 try {
                     const streamId = await stream.publish(event);
-                    await dedup.markSeen(event.event_id);
+                    await dedup.markSeen(event.event_id, event.match_id);
 
                     processed++;
                     metrics.eventsProcessed.inc({ type: event.type });
@@ -356,7 +374,15 @@ async function main() {
     });
 
     logger.info(`Ingestion Service listening on ${config.host}:${config.port}`, {
-        endpoints: ['/events', '/events/batch', '/health', '/healthz', '/readyz', '/metrics'],
+        endpoints: [
+            '/events',
+            '/events/batch',
+            '/admin/*',
+            '/health',
+            '/healthz',
+            '/readyz',
+            '/metrics'
+        ],
     });
 
     // =====================================

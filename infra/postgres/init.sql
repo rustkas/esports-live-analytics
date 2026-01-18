@@ -247,7 +247,38 @@ CREATE TRIGGER schema_versions_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ============================================
--- 8. Helper Functions
+-- 9. API Audit Log (B2B Security)
+-- ============================================
+CREATE TABLE IF NOT EXISTS api_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Request Identity
+    request_id UUID NOT NULL,
+    client_id UUID REFERENCES api_clients(id),
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    
+    -- Action
+    method VARCHAR(10),
+    path TEXT,
+    resource VARCHAR(100),
+    action VARCHAR(100),
+    
+    -- Result
+    status_code INTEGER,
+    latency_ms INTEGER,
+    
+    -- Context
+    metadata JSONB
+);
+
+CREATE INDEX idx_audit_timestamp ON api_audit_log(timestamp DESC);
+CREATE INDEX idx_audit_client ON api_audit_log(client_id);
+CREATE INDEX idx_audit_request ON api_audit_log(request_id);
+
+-- ============================================
+-- 10. Helper Functions
 -- ============================================
 
 -- Auto-update updated_at
