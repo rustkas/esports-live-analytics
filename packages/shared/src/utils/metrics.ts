@@ -7,7 +7,7 @@
 // Metric Types
 // ============================================
 
-interface CounterMetric {
+export interface CounterMetric {
     type: 'counter';
     name: string;
     help: string;
@@ -15,7 +15,7 @@ interface CounterMetric {
     values: Map<string, number>;
 }
 
-interface GaugeMetric {
+export interface GaugeMetric {
     type: 'gauge';
     name: string;
     help: string;
@@ -23,7 +23,7 @@ interface GaugeMetric {
     values: Map<string, number>;
 }
 
-interface HistogramMetric {
+export interface HistogramMetric {
     type: 'histogram';
     name: string;
     help: string;
@@ -35,11 +35,105 @@ interface HistogramMetric {
 type Metric = CounterMetric | GaugeMetric | HistogramMetric;
 
 // ============================================
+// Counter Class
+// ============================================
+
+export class Counter {
+    constructor(private metric: CounterMetric) { }
+
+    inc(labels: Record<string, string> = {}, value = 1): void {
+        const key = this.labelsToString(labels);
+        const current = this.metric.values.get(key) ?? 0;
+        this.metric.values.set(key, current + value);
+    }
+
+    private labelsToString(labels: Record<string, string>): string {
+        return Object.entries(labels)
+            .map(([k, v]) => `${k}="${v}"`)
+            .join(',');
+    }
+}
+
+// ============================================
+// Gauge Class
+// ============================================
+
+export class Gauge {
+    constructor(private metric: GaugeMetric) { }
+
+    set(value: number, labels: Record<string, string> = {}): void {
+        const key = this.labelsToString(labels);
+        this.metric.values.set(key, value);
+    }
+
+    inc(labels: Record<string, string> = {}, value = 1): void {
+        const key = this.labelsToString(labels);
+        const current = this.metric.values.get(key) ?? 0;
+        this.metric.values.set(key, current + value);
+    }
+
+    dec(labels: Record<string, string> = {}, value = 1): void {
+        const key = this.labelsToString(labels);
+        const current = this.metric.values.get(key) ?? 0;
+        this.metric.values.set(key, current - value);
+    }
+
+    private labelsToString(labels: Record<string, string>): string {
+        return Object.entries(labels)
+            .map(([k, v]) => `${k}="${v}"`)
+            .join(',');
+    }
+}
+
+// ============================================
+// Histogram Class
+// ============================================
+
+export class Histogram {
+    constructor(private metric: HistogramMetric) { }
+
+    observe(value: number, labels: Record<string, string> = {}): void {
+        const key = this.labelsToString(labels);
+
+        let obs = this.metric.observations.get(key);
+        if (!obs) {
+            obs = { count: 0, sum: 0, buckets: new Array(this.metric.buckets.length).fill(0) };
+            this.metric.observations.set(key, obs);
+        }
+
+        obs.count++;
+        obs.sum += value;
+
+        for (let i = 0; i < this.metric.buckets.length; i++) {
+            if (value <= this.metric.buckets[i]!) {
+                obs.buckets[i]!++;
+            }
+        }
+    }
+
+    // Timer helper
+    startTimer(labels: Record<string, string> = {}): () => number {
+        const start = performance.now();
+        return () => {
+            const duration = performance.now() - start;
+            this.observe(duration, labels);
+            return duration;
+        };
+    }
+
+    private labelsToString(labels: Record<string, string>): string {
+        return Object.entries(labels)
+            .map(([k, v]) => `${k}="${v}"`)
+            .join(',');
+    }
+}
+
+// ============================================
 // Registry
 // ============================================
 
 export class MetricsRegistry {
-    private metrics: Map<string, Metric> = new Map();
+    private _metrics: Map<string, Metric> = new Map();
 
     // Counter
     createCounter(name: string, help: string, labels: string[] = []): Counter {
@@ -50,7 +144,7 @@ export class MetricsRegistry {
             labels,
             values: new Map(),
         };
-        this.metrics.set(name, metric);
+        this._metrics.set(name, metric);
         return new Counter(metric);
     }
 
@@ -63,7 +157,7 @@ export class MetricsRegistry {
             labels,
             values: new Map(),
         };
-        this.metrics.set(name, metric);
+        this._metrics.set(name, metric);
         return new Gauge(metric);
     }
 
@@ -82,15 +176,15 @@ export class MetricsRegistry {
             buckets,
             observations: new Map(),
         };
-        this.metrics.set(name, metric);
+        this._metrics.set(name, metric);
         return new Histogram(metric);
     }
 
     // Output Prometheus format
-    metrics(): string {
+    getMetrics(): string {
         const lines: string[] = [];
 
-        for (const metric of this.metrics.values()) {
+        for (const metric of this._metrics.values()) {
             lines.push(`# HELP ${metric.name} ${metric.help}`);
 
             if (metric.type === 'counter') {
@@ -128,99 +222,13 @@ export class MetricsRegistry {
 
     // Reset all metrics (for testing)
     reset(): void {
-        for (const metric of this.metrics.values()) {
+        for (const metric of this._metrics.values()) {
             if (metric.type === 'counter' || metric.type === 'gauge') {
                 metric.values.clear();
             } else if (metric.type === 'histogram') {
                 metric.observations.clear();
             }
         }
-    }
-}
-
-// ============================================
-// Metric Classes
-// ============================================
-
-class Counter {
-    constructor(private metric: CounterMetric) { }
-
-    inc(labels: Record<string, string> = {}, value = 1): void {
-        const key = this.labelsToString(labels);
-        const current = this.metric.values.get(key) ?? 0;
-        this.metric.values.set(key, current + value);
-    }
-
-    private labelsToString(labels: Record<string, string>): string {
-        return Object.entries(labels)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(',');
-    }
-}
-
-class Gauge {
-    constructor(private metric: GaugeMetric) { }
-
-    set(value: number, labels: Record<string, string> = {}): void {
-        const key = this.labelsToString(labels);
-        this.metric.values.set(key, value);
-    }
-
-    inc(labels: Record<string, string> = {}, value = 1): void {
-        const key = this.labelsToString(labels);
-        const current = this.metric.values.get(key) ?? 0;
-        this.metric.values.set(key, current + value);
-    }
-
-    dec(labels: Record<string, string> = {}, value = 1): void {
-        const key = this.labelsToString(labels);
-        const current = this.metric.values.get(key) ?? 0;
-        this.metric.values.set(key, current - value);
-    }
-
-    private labelsToString(labels: Record<string, string>): string {
-        return Object.entries(labels)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(',');
-    }
-}
-
-class Histogram {
-    constructor(private metric: HistogramMetric) { }
-
-    observe(value: number, labels: Record<string, string> = {}): void {
-        const key = this.labelsToString(labels);
-
-        let obs = this.metric.observations.get(key);
-        if (!obs) {
-            obs = { count: 0, sum: 0, buckets: new Array(this.metric.buckets.length).fill(0) };
-            this.metric.observations.set(key, obs);
-        }
-
-        obs.count++;
-        obs.sum += value;
-
-        for (let i = 0; i < this.metric.buckets.length; i++) {
-            if (value <= this.metric.buckets[i]!) {
-                obs.buckets[i]!++;
-            }
-        }
-    }
-
-    // Timer helper
-    startTimer(labels: Record<string, string> = {}): () => number {
-        const start = performance.now();
-        return () => {
-            const duration = performance.now() - start;
-            this.observe(duration, labels);
-            return duration;
-        };
-    }
-
-    private labelsToString(labels: Record<string, string>): string {
-        return Object.entries(labels)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(',');
     }
 }
 

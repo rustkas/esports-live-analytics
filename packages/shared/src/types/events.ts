@@ -28,7 +28,7 @@ export type EventType =
 // ============================================
 // Base Event Structure
 // ============================================
-export interface BaseEvent {
+export interface BaseEvent<T = Record<string, unknown>> {
     /** Unique event identifier (for idempotency) */
     event_id: string;
 
@@ -57,7 +57,7 @@ export interface BaseEvent {
     seq_no: number;
 
     /** Event-specific data */
-    payload: Record<string, unknown>;
+    payload: T;
 }
 
 // ============================================
@@ -71,11 +71,11 @@ export interface KillPayload {
     victim_team: 'A' | 'B';
     weapon: string;
     is_headshot: boolean;
-    is_wallbang: boolean;
-    is_through_smoke: boolean;
-    is_no_scope: boolean;
-    is_first_kill: boolean;
-    attacker_blind: boolean;
+    is_wallbang?: boolean;
+    is_through_smoke?: boolean;
+    is_no_scope?: boolean;
+    is_first_kill?: boolean;
+    attacker_blind?: boolean;
     team_a_id?: string;
     team_b_id?: string;
 }
@@ -85,8 +85,8 @@ export interface RoundEndPayload {
     win_reason: 'elimination' | 'bomb_exploded' | 'bomb_defused' | 'time_expired';
     team_a_score: number;
     team_b_score: number;
-    team_a_alive: number;
-    team_b_alive: number;
+    team_a_alive?: number;
+    team_b_alive?: number;
     team_a_id: string;
     team_b_id: string;
 }
@@ -101,10 +101,10 @@ export interface BombPayload {
 export interface EconomyPayload {
     team_a_econ: number;
     team_b_econ: number;
-    team_a_equipment_value: number;
-    team_b_equipment_value: number;
-    team_a_buy_type: 'full' | 'force' | 'eco' | 'pistol';
-    team_b_buy_type: 'full' | 'force' | 'eco' | 'pistol';
+    team_a_equipment_value?: number;
+    team_b_equipment_value?: number;
+    team_a_buy_type?: 'full' | 'force' | 'eco' | 'pistol';
+    team_b_buy_type?: 'full' | 'force' | 'eco' | 'pistol';
 }
 
 export interface PlayerHurtPayload {
@@ -113,9 +113,9 @@ export interface PlayerHurtPayload {
     victim_player_id: string;
     victim_team: 'A' | 'B';
     damage: number;
-    damage_armor: number;
+    damage_armor?: number;
     weapon: string;
-    hitgroup: string;
+    hitgroup?: string;
 }
 
 export interface RoundStartPayload {
@@ -135,71 +135,60 @@ export interface MapPayload {
 }
 
 export interface MatchPayload {
-    tournament: string;
-    format: 'bo1' | 'bo3' | 'bo5';
+    tournament?: string;
+    format?: 'bo1' | 'bo3' | 'bo5';
     team_a_id: string;
     team_b_id: string;
-    team_a_name: string;
-    team_b_name: string;
+    team_a_name?: string;
+    team_b_name?: string;
 }
 
 // ============================================
 // Typed Events
 // ============================================
 
-export interface KillEvent extends BaseEvent {
+export interface KillEvent extends BaseEvent<KillPayload> {
     type: 'kill';
-    payload: KillPayload;
 }
 
-export interface RoundEndEvent extends BaseEvent {
+export interface RoundEndEvent extends BaseEvent<RoundEndPayload> {
     type: 'round_end';
-    payload: RoundEndPayload;
 }
 
-export interface RoundStartEvent extends BaseEvent {
+export interface RoundStartEvent extends BaseEvent<RoundStartPayload> {
     type: 'round_start';
-    payload: RoundStartPayload;
 }
 
-export interface BombPlantedEvent extends BaseEvent {
+export interface BombPlantedEvent extends BaseEvent<BombPayload> {
     type: 'bomb_planted';
-    payload: BombPayload;
 }
 
-export interface BombDefusedEvent extends BaseEvent {
+export interface BombDefusedEvent extends BaseEvent<BombPayload> {
     type: 'bomb_defused';
-    payload: BombPayload;
 }
 
-export interface EconomyEvent extends BaseEvent {
+export interface EconomyEvent extends BaseEvent<EconomyPayload> {
     type: 'economy_update';
-    payload: EconomyPayload;
 }
 
-export interface PlayerHurtEvent extends BaseEvent {
+export interface PlayerHurtEvent extends BaseEvent<PlayerHurtPayload> {
     type: 'player_hurt';
-    payload: PlayerHurtPayload;
 }
 
-export interface MapStartEvent extends BaseEvent {
+export interface MapStartEvent extends BaseEvent<MapPayload> {
     type: 'map_start';
-    payload: MapPayload;
 }
 
-export interface MapEndEvent extends BaseEvent {
+export interface MapEndEvent extends BaseEvent<MapPayload & { winner_team: 'A' | 'B'; team_a_score: number; team_b_score: number }> {
     type: 'map_end';
-    payload: MapPayload & { winner_team: 'A' | 'B'; team_a_score: number; team_b_score: number };
 }
 
-export interface MatchStartEvent extends BaseEvent {
+export interface MatchStartEvent extends BaseEvent<MatchPayload> {
     type: 'match_start';
-    payload: MatchPayload;
 }
 
-export interface MatchEndEvent extends BaseEvent {
+export interface MatchEndEvent extends BaseEvent<MatchPayload & { winner_team: 'A' | 'B'; team_a_maps: number; team_b_maps: number }> {
     type: 'match_end';
-    payload: MatchPayload & { winner_team: 'A' | 'B'; team_a_maps: number; team_b_maps: number };
 }
 
 // ============================================
