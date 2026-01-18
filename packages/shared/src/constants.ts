@@ -8,9 +8,13 @@
 
 export const QUEUES = {
     EVENTS: 'events',
-    EVENTS_DLQ: 'events:dlq',
     PREDICTIONS: 'predictions',
     NOTIFICATIONS: 'notifications',
+} as const;
+
+export const PAYLOAD_LIMITS = {
+    MAX_EVENT_SIZE_BYTES: 1024 * 64, // 64 KB
+    MAX_BATCH_SIZE: 100, // Batch limit
 } as const;
 
 // ============================================

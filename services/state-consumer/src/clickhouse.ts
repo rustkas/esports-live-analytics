@@ -40,11 +40,36 @@ export function createClickHouseWriter(): ClickHouseWriter {
         }, config.batch.flushIntervalMs);
     };
 
+    const MAX_BUFFER_SIZE = 50000; // Drop events if buffer exceeds this (Circuit Breaker fallback)
+    let circuitState: 'closed' | 'open' | 'half-open' = 'closed';
+    let failureCount = 0;
+    let nextRetry = 0;
+
     const flush = async () => {
         if (buffer.length === 0) return;
 
-        const events = buffer;
-        buffer = [];
+        // Circuit Breaker Check
+        if (circuitState === 'open') {
+            if (Date.now() < nextRetry) {
+                // Check overflow
+                if (buffer.length > MAX_BUFFER_SIZE) {
+                    logger.warn('Buffer overflow during circuit break, dropping oldest events', { count: buffer.length });
+                    buffer = buffer.slice(buffer.length - MAX_BUFFER_SIZE);
+                }
+                return;
+            }
+            circuitState = 'half-open';
+        }
+
+        const batchSize = Math.min(buffer.length, 5000); // Adaptive: take up to 5k
+        const events = buffer.slice(0, batchSize);
+        // Do not remove from buffer yet until success, or logic:
+        // slice -> try -> if success remove from buffer?
+        // Current logic was: move to local var, if fail push back.
+        // Better: use slice, if success splice original buffer?
+        // But original buffer might have grown.
+        // Let's stick to "take out", if fail "put back".
+        buffer = buffer.slice(batchSize);
 
         try {
             await client.insert({
@@ -69,14 +94,31 @@ export function createClickHouseWriter(): ClickHouseWriter {
             });
 
             logger.info('Events written to ClickHouse', { count: events.length });
+
+            if (circuitState === 'half-open') {
+                circuitState = 'closed';
+                failureCount = 0;
+                logger.info('Circuit Breaker Closed (Recovered)');
+            }
         } catch (error) {
+            failureCount++;
+
             logger.error('Failed to write to ClickHouse', {
                 error: String(error),
                 count: events.length,
+                failures: failureCount
             });
 
-            // Put events back in buffer for retry
-            buffer = [...events, ...buffer];
+            // Circuit Breaker Trip
+            if (failureCount > 5 && circuitState !== 'open') {
+                circuitState = 'open';
+                nextRetry = Date.now() + 10000; // 10s cooldown
+                logger.warn('Circuit Breaker Tripped: ClickHouse writes paused');
+            }
+
+            // Put events back at HEAD of buffer (FILO? No, we want FIFO order usually, implies unshift)
+            // Original code: buffer = [...events, ...buffer];
+            buffer.unshift(...events);
         }
     };
 

@@ -59,6 +59,10 @@ export const NormalizedEventSchema = z.object({
     context: EventContextSchema.optional(),
 });
 
+export function validateEvent(data: unknown) {
+    return NormalizedEventSchema.safeParse(data);
+}
+
 // ==========================================
 // Registry (Map type to payload schema)
 // ==========================================

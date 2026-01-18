@@ -159,6 +159,13 @@ async function main() {
         const stageStart = performance.now();
 
         try {
+            // Check content length (Fast fail)
+            const contentLength = c.req.header('content-length');
+            if (contentLength && parseInt(contentLength, 10) > PAYLOAD_LIMITS.MAX_EVENT_SIZE_BYTES) {
+                metrics.errors.inc({ type: 'payload_too_large' });
+                return c.json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Payload exceeds limit' } }, 413);
+            }
+
             const body = await c.req.json();
 
             // Add trace_id if not present
