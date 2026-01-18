@@ -1,0 +1,220 @@
+version: '3.8'
+
+services:
+  # ===================
+  # Infrastructure
+  # ===================
+  
+  postgres:
+    image: postgres:16-alpine
+    container_name: esports-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: esports
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1-alpine
+    container_name: esports-clickhouse
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./infra/clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: esports-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ===================
+  # Monitoring
+  # ===================
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: esports-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: esports-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  # ===================
+  # Application Services
+  # ===================
+
+  ingestion:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    container_name: esports-ingestion
+    ports:
+      - "8081:8081"
+    environment:
+      NODE_ENV: production
+      PORT: 8081
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  state-consumer:
+    build:
+      context: ./services/state-consumer
+      dockerfile: Dockerfile
+    container_name: esports-state-consumer
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  analytics:
+    build:
+      context: ./services/analytics
+      dockerfile: Dockerfile
+    container_name: esports-analytics
+    ports:
+      - "8082:8082"
+    environment:
+      NODE_ENV: production
+      PORT: 8082
+      CLICKHOUSE_URL: http://clickhouse:8123
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  predictor:
+    build:
+      context: ./services/predictor
+      dockerfile: Dockerfile
+    container_name: esports-predictor
+    ports:
+      - "8083:8083"
+    environment:
+      NODE_ENV: production
+      PORT: 8083
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: esports-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      REDIS_URL: redis://redis:6379
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/esports
+      ANALYTICS_URL: http://analytics:8082
+      PREDICTOR_URL: http://predictor:8083
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      analytics:
+        condition: service_started
+      predictor:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: esports-network

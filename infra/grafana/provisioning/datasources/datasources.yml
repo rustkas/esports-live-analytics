@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    url: http://clickhouse:8123
+    jsonData:
+      defaultDatabase: esports
+    editable: false
+
+  - name: PostgreSQL
+    type: postgres
+    url: postgres:5432
+    database: esports
+    user: postgres
+    secureJsonData:
+      password: postgres
+    jsonData:
+      sslmode: disable
+    editable: false

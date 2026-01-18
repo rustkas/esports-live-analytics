@@ -1,0 +1,38 @@
+{
+    "name": "esports-live-analytics",
+    "version": "1.0.0",
+    "description": "Live CS2 analytics and predictions platform",
+    "private": true,
+    "type": "module",
+    "workspaces": [
+        "packages/*",
+        "services/*"
+    ],
+    "scripts": {
+        "dev": "concurrently \"npm:dev:*\"",
+        "dev:ingestion": "npm -w services/ingestion run dev",
+        "dev:state-consumer": "npm -w services/state-consumer run dev",
+        "dev:analytics": "npm -w services/analytics run dev",
+        "dev:predictor": "npm -w services/predictor run dev",
+        "dev:api-gateway": "npm -w services/api-gateway run dev",
+        "build": "npm run build --workspaces",
+        "test": "npm run test --workspaces --if-present",
+        "lint": "eslint . --ext .ts",
+        "format": "prettier --write \"**/*.ts\"",
+        "docker:up": "docker compose up -d",
+        "docker:down": "docker compose down",
+        "docker:logs": "docker compose logs -f",
+        "db:migrate": "docker compose exec postgres psql -U postgres -d esports -f /docker-entrypoint-initdb.d/init.sql",
+        "db:clickhouse": "docker compose exec clickhouse clickhouse-client --multiquery < ./infra/clickhouse/schema.sql"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "concurrently": "^8.2.2",
+        "eslint": "^8.56.0",
+        "prettier": "^3.2.4",
+        "typescript": "^5.3.3"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    }
+}

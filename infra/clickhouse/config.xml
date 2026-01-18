@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- Performance tuning for analytics workload -->
+    <logger>
+        <level>information</level>
+        <console>1</console>
+    </logger>
+    
+    <!-- Memory limits -->
+    <max_memory_usage>2000000000</max_memory_usage>
+    <max_memory_usage_for_user>1500000000</max_memory_usage_for_user>
+    
+    <!-- Query settings -->
+    <max_query_size>1048576</max_query_size>
+    <max_ast_elements>50000</max_ast_elements>
+    
+    <!-- Background processing -->
+    <background_pool_size>4</background_pool_size>
+    <background_schedule_pool_size>4</background_schedule_pool_size>
+    
+    <!-- MergeTree settings -->
+    <merge_tree>
+        <max_suspicious_broken_parts>5</max_suspicious_broken_parts>
+        <parts_to_delay_insert>150</parts_to_delay_insert>
+        <parts_to_throw_insert>300</parts_to_throw_insert>
+    </merge_tree>
+    
+    <!-- HTTP interface -->
+    <http_server_default_response><![CDATA[<html><body><h1>ClickHouse</h1></body></html>]]></http_server_default_response>
+</clickhouse>

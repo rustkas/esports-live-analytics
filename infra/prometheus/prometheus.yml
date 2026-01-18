@@ -1,0 +1,56 @@
+# Prometheus configuration for CS2 Live Analytics
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'esports-analytics'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# Load rules
+# rule_files: []
+
+# Scrape configs
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Ingestion service
+  - job_name: 'ingestion'
+    static_configs:
+      - targets: ['ingestion:8081']
+    metrics_path: '/metrics'
+
+  # Analytics service
+  - job_name: 'analytics'
+    static_configs:
+      - targets: ['analytics:8082']
+    metrics_path: '/metrics'
+
+  # Predictor service
+  - job_name: 'predictor'
+    static_configs:
+      - targets: ['predictor:8083']
+    metrics_path: '/metrics'
+
+  # API Gateway
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+    metrics_path: '/metrics'
+
+  # Redis (if using redis_exporter)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+
+  # ClickHouse
+  # - job_name: 'clickhouse'
+  #   static_configs:
+  #     - targets: ['clickhouse:9363']

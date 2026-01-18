@@ -1,0 +1,18 @@
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "paths": {
+            "@esports/shared": [
+                "../../packages/shared/src"
+            ],
+            "@esports/shared/*": [
+                "../../packages/shared/src/*"
+            ]
+        }
+    },
+    "include": [
+        "src/**/*"
+    ]
+}
